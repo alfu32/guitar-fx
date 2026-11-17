@@ -14,6 +14,8 @@ pub struct LiveOpts {
     pub buffer: Option<u32>,
     pub channel: usize,
     pub verbose: bool,
+    pub input_db: f32,
+    pub output_db: f32,
 }
 
 fn err<E: std::fmt::Display>(e: E) -> String {
@@ -71,7 +73,7 @@ pub fn run(specs: &[Spec], opts: &LiveOpts) -> Result<(), String> {
 
     macro_rules! go {
         ($t:ty) => {
-            run_typed::<$t>(&input, &output, in_conf, out_conf, specs, sr, opts.channel, opts.verbose)
+            run_typed::<$t>(&input, &output, in_conf, out_conf, specs, sr, opts.channel, opts.verbose, (opts.input_db, opts.output_db))
         };
     }
     match in_cfg.sample_format() {
@@ -92,6 +94,7 @@ fn run_typed<T>(
     sr: f32,
     channel: usize,
     verbose: bool,
+    (input_db, output_db): (f32, f32),
 ) -> Result<(), String>
 where
     T: SizedSample + Send + 'static,
@@ -99,7 +102,7 @@ where
     T: cpal::FromSample<f32>,
 {
     use cpal::Sample;
-    let mut chain = Chain::new(specs, sr)?;
+    let mut chain = Chain::new(specs, sr, input_db, output_db)?;
     let in_ch = in_conf.channels as usize;
     let out_ch = out_conf.channels as usize;
     let channel = channel.min(in_ch - 1);

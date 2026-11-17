@@ -1,0 +1,81 @@
+# fxchain
+
+An ordered, repeatable multi-effect chain for guitar and voice, on the command line.
+Process WAV files or run live (input → effects → output) with a low-latency buffer.
+
+```
+cargo build --release
+./target/release/fxchain --help
+```
+
+## Examples
+
+```
+# live, default devices, 64-frame buffer
+fxchain --compressor ratio=3 --overdrive drive=0.65 --echo time=380,mix=0.3
+
+# order matters and effects may repeat
+fxchain --overdrive 0.7 --echo --overdrive 0.2
+
+# file in, file out
+fxchain -i riff.wav -o riff.fx.wav --chorus --reverb 0.3
+
+# presets
+fxchain --preset presets/guitar-crunch.fx
+fxchain --compressor 3 --overdrive 0.6 --save-preset mine.fx
+```
+
+## Effects
+
+Each takes `name=value,name=value`; a bare number sets the first parameter (marked `*`).
+
+| Flag | Parameters (default) |
+|---|---|
+| `--overdrive` | drive* 0..1 (0.5), tone 0..1 (0.6), level 0..2 (1) |
+| `--compressor` | ratio* (4), threshold dB (-18), attack ms (10), release ms (120), makeup dB or `auto` |
+| `--echo` | mix* (0.4), time ms (350), feedback (0.45), tone (0.5) — tape-style |
+| `--delay` | time* ms (300), feedback (0.3), mix (0.5) — clean |
+| `--chorus` | depth* (0.5), rate Hz (0.6), mix (0.5) |
+| `--flanger` | depth* (0.7), rate (0.3), feedback (0.5), mix (0.5) |
+| `--phaser` | depth* (0.7), rate (0.5), feedback (0.5), mix (0.5) |
+| `--tremolo` | depth* (0.5), rate Hz (5) |
+| `--wah` | sensitivity* (0.6), rate Hz (0 = follows picking), q (5), min Hz (350), max Hz (2200), mix (1) |
+| `--harmonics` | mix* (0.3), drive (0.5), freq Hz (2000) — exciter |
+| `--reverb` | mix* (0.3), time s (2), size m (10), damping (0.5) |
+| `--tone-shift` | semitones* (0), cents (0), mix (1), mode `high`/`fast`, window ms (10, fast only) |
+| `--autotune` | amount* (1), key (C), scale (chromatic, major, minor, pentatonic, minor-pentatonic, blues), speed ms (40; 0 = hard), mode, window |
+| `--vocoder` | mix* (1), bands (16), carrier Hz (110), release ms (15) |
+
+Pitch effects have two modes. `high` is the cleanest and works on chords but adds
+50+ ms. `fast` locks to the detected note period: about 10 ms, accurate on one note at a
+time (guitar down to low E), and it degrades on chords.
+
+## Options
+
+`--input-gain DB`, `--output-gain DB`, `--preset FILE`, `--save-preset FILE`,
+`--buffer FRAMES` (live, default 64), `--input-device`, `--output-device`, `--channel N`,
+`--tail SECONDS` (file mode), `-v` (live level meter), `--list-devices`.
+
+## Low latency on PipeWire
+
+`--buffer` sets `PIPEWIRE_LATENCY` for you. On a USB interface the device's own period and
+headroom usually dominate; for a Momix-Cab this WirePlumber rule cut them from 512 frames to 48:
+
+```
+# ~/.config/wireplumber/wireplumber.conf.d/51-momix-lowlatency.conf
+monitor.alsa.rules = [{
+  matches = [{ node.name = "~alsa_(input|output)\\.usb-ShenZhen-JOYO.*" }]
+  actions = { update-props = {
+    api.alsa.period-size = 64
+    api.alsa.period-num  = 3
+    api.alsa.headroom    = 0
+  } }
+}]
+```
+
+Underruns while playing mean the CPU is too busy for the buffer: raise `--buffer` to 128.
+
+## Tests
+
+`cargo test --release` checks pitch accuracy (fast and high shifters, autotune, detector across
+the guitar range), effect order and repetition, and parameter validation.
