@@ -1,7 +1,7 @@
 //! Per-effect colours and painted icons (drawn with shapes, so no font support is needed).
 
 use eframe::egui::{self, epaint::Hsva, pos2, vec2, Color32, Pos2, Rect, Sense, Shape, Stroke};
-use std::f32::consts::TAU;
+use std::f32::consts::{PI, TAU};
 
 pub fn accent(effect: &str) -> Color32 {
     let (r, g, b) = match effect {
@@ -19,6 +19,16 @@ pub fn accent(effect: &str) -> Color32 {
         "tone-shift" => (60, 205, 100),
         "autotune" => (235, 65, 130),
         "vocoder" => (190, 90, 225),
+        "transient" => (225, 150, 90),
+        "freeze" => (120, 215, 245),
+        "pick-noise" => (190, 190, 200),
+        "bitcrusher" => (110, 230, 90),
+        "ringmod" => (240, 120, 70),
+        "reverse" => (200, 130, 255),
+        "kalimba" => (235, 175, 100),
+        "wind" => (140, 200, 220),
+        "swell" => (170, 140, 230),
+        "shimmer" => (240, 215, 140),
         _ => (150, 150, 150),
     };
     Color32::from_rgb(r, g, b)
@@ -147,6 +157,66 @@ pub fn effect_icon(ui: &mut egui::Ui, name: &str, color: Color32, size: f32) {
                 p.rect_filled(Rect::from_min_max(at(x - 0.07, 1.0 - h), at(x + 0.07, 1.0)), 1.0, color);
             }
         }
+        "transient" => {
+            // a spike that is cut down
+            p.add(Shape::line(vec![at(0.0, 0.8), at(0.3, 0.8), at(0.35, 0.05), at(0.45, 0.8), at(1.0, 0.8)], Stroke::new(w, tint(color, 120))));
+            p.add(Shape::line(vec![at(0.0, 0.8), at(0.3, 0.8), at(0.35, 0.4), at(0.45, 0.8), at(1.0, 0.8)], st));
+        }
+        "freeze" => {
+            for k in 0..3 {
+                let a = k as f32 * PI / 3.0;
+                let d = vec2(a.cos(), a.sin()) * rad;
+                p.line_segment([c - d, c + d], st);
+            }
+        }
+        "pick-noise" => {
+            let ys = [0.5, 0.15, 0.8, 0.3, 0.7, 0.4, 0.6];
+            let pts: Vec<Pos2> = ys.iter().enumerate().map(|(i, y)| at(i as f32 / 6.0, *y)).collect();
+            p.add(Shape::line(pts, st));
+        }
+        "bitcrusher" => {
+            let mut pts = Vec::new();
+            for i in 0..5 {
+                let y = 0.8 - 0.15 * (i as f32) - if i > 2 { 0.0 } else { 0.0 };
+                pts.push(at(i as f32 / 5.0, y));
+                pts.push(at((i + 1) as f32 / 5.0, y));
+            }
+            p.add(Shape::line(pts, st));
+        }
+        "ringmod" => {
+            p.circle_stroke(at(0.35, 0.5), rad * 0.62, st);
+            p.circle_stroke(at(0.65, 0.5), rad * 0.62, Stroke::new(w, tint(color, 170)));
+        }
+        "reverse" => {
+            for dx in [0.0, 0.45] {
+                p.add(Shape::convex_polygon(vec![at(0.5 + dx, 0.15), at(0.5 + dx, 0.85), at(0.05 + dx, 0.5)], color, Stroke::NONE));
+            }
+        }
+        "kalimba" => {
+            for (i, h) in [0.55, 0.9, 0.7, 0.9, 0.55].iter().enumerate() {
+                let x = 0.1 + i as f32 * 0.2;
+                p.line_segment([at(x, 0.95), at(x, 0.95 - h)], Stroke::new(w * 1.6, color));
+            }
+        }
+        "wind" => {
+            for (k, y) in [0.25, 0.5, 0.75].iter().enumerate() {
+                let pts: Vec<Pos2> = (0..=10).map(|i| {
+                    let x = i as f32 / 10.0;
+                    at(x, *y + 0.08 * (x * TAU + k as f32).sin())
+                }).collect();
+                p.add(Shape::line(pts, Stroke::new(w, tint(color, 255 - 50 * k as u8))));
+            }
+        }
+        "swell" => {
+            p.add(Shape::convex_polygon(vec![at(0.0, 0.5), at(1.0, 0.05), at(1.0, 0.95)], tint(color, 200), Stroke::NONE));
+        }
+        "shimmer" => {
+            for (cx, cy, s) in [(0.35, 0.6, 0.35), (0.72, 0.28, 0.2), (0.75, 0.75, 0.15)] {
+                let (x, y) = (at(cx, cy), rad * s);
+                p.line_segment([x - vec2(0.0, y), x + vec2(0.0, y)], st);
+                p.line_segment([x - vec2(y, 0.0), x + vec2(y, 0.0)], st);
+            }
+        }
         _ => {
             p.circle_filled(c, rad * 0.5, color);
         }
@@ -162,11 +232,11 @@ pub fn control_icon(ui: &mut egui::Ui, key: &str, color: Color32) {
     let r = s * 0.38;
     match key {
         // loudness: triangle
-        "drive" | "level" | "makeup" | "amount" | "threshold" | "ratio" | "sensitivity" => {
+        "drive" | "level" | "makeup" | "bits" | "follow" | "shimmer" | "amount" | "threshold" | "ratio" | "sensitivity" => {
             p.add(Shape::convex_polygon(vec![pos2(c.x - r, c.y + r), pos2(c.x + r, c.y + r), pos2(c.x, c.y - r)], color, Stroke::NONE));
         }
         // time: ring
-        "time" | "rate" | "speed" | "attack" | "release" | "feedback" | "window" => {
+        "time" | "rate" | "speed" | "attack" | "release" | "feedback" | "window" | "sustain" | "settle" | "length" | "decay" | "rise" => {
             p.circle_stroke(c, r, Stroke::new(2.0, color));
             p.line_segment([c, pos2(c.x, c.y - r * 0.9)], Stroke::new(1.5, color));
         }

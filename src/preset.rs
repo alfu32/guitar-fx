@@ -27,6 +27,12 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("Octave thick", include_str!("../presets/builtin/octave-thick.fx")),
     ("Robot voice", include_str!("../presets/builtin/robot-voice.fx")),
     ("Autotune pop", include_str!("../presets/builtin/autotune-pop.fx")),
+    ("Zen kalimba", include_str!("../presets/builtin/zen-kalimba.fx")),
+    ("Ethereal bloom", include_str!("../presets/builtin/ethereal-bloom.fx")),
+    ("Frozen pad", include_str!("../presets/builtin/frozen-pad.fx")),
+    ("Soft pick", include_str!("../presets/builtin/soft-pick.fx")),
+    ("Lofi grit", include_str!("../presets/builtin/lofi-grit.fx")),
+    ("Backwards dream", include_str!("../presets/builtin/backwards-dream.fx")),
 ];
 
 pub fn parse_db(v: &str, what: &str) -> Result<f32, String> {
@@ -72,7 +78,7 @@ impl Preset {
     }
 
     pub fn to_text(&self) -> String {
-        let mut out = String::from("# guitarfx preset — effects run top to bottom\n");
+        let mut out = String::from("# guitar-fx preset — effects run top to bottom\n");
         if let Some(b) = self.buffer {
             out += &format!("buffer {b}\n");
         }

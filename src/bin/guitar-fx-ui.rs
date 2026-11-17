@@ -1,15 +1,15 @@
 //! Graphical front end. Every control talks to the running audio chain through
-//! `guitarfx_core::chain::Control`, so changes are heard within one audio buffer.
+//! `guitar_fx_core::chain::Control`, so changes are heard within one audio buffer.
 
-#[path = "guitarfx-ui/theme.rs"]
+#[path = "guitar-fx-ui/theme.rs"]
 mod theme;
 
 use eframe::egui;
-use guitarfx_core::chain::{Cmd, Slot};
-use guitarfx_core::effects::build;
-use guitarfx_core::live::{self, LiveOpts, Running, DEFAULT_BUFFER};
-use guitarfx_core::params::{EffectDef, Kind, Spec, Value, EFFECTS};
-use guitarfx_core::preset::{Preset, BUILTIN};
+use guitar_fx_core::chain::{Cmd, Slot};
+use guitar_fx_core::effects::build;
+use guitar_fx_core::live::{self, LiveOpts, Running, DEFAULT_BUFFER};
+use guitar_fx_core::params::{EffectDef, Kind, Spec, Value, EFFECTS, EXPERIMENTAL, ZEN};
+use guitar_fx_core::preset::{Preset, BUILTIN};
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -22,11 +22,14 @@ const GAP: f32 = 18.0;
 
 /// Where the session and the user's own chains live.
 fn config_dir() -> PathBuf {
-    let dir = config_base().join("guitarfx");
-    // The program was called fxchain before it was renamed; carry the old settings over.
-    let old = config_base().join("fxchain");
-    if !dir.exists() && old.exists() {
-        let _ = std::fs::rename(&old, &dir);
+    let base = config_base();
+    let dir = base.join("guitar-fx");
+    // Earlier names of this program; carry the old settings over.
+    for old in ["guitarfx", "fxchain"] {
+        let old = base.join(old);
+        if !dir.exists() && old.exists() {
+            let _ = std::fs::rename(&old, &dir);
+        }
     }
     dir
 }
@@ -123,7 +126,7 @@ impl App {
         app.scan_chains();
         if !app.restore_session() {
             for name in ["compressor", "overdrive", "reverb"] {
-                app.add_local(guitarfx_core::params::effect_def(name).unwrap());
+                app.add_local(guitar_fx_core::params::effect_def(name).unwrap());
             }
         }
         app.saved_session = app.session_text();
@@ -590,24 +593,34 @@ impl eframe::App for App {
         });
         egui::Panel::right("tools").resizable(false).default_size(270.0).show(root, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.heading("Add effect");
-                egui::Grid::new("add-grid").num_columns(2).spacing([6.0, 4.0]).show(ui, |ui| {
-                    for (k, def) in EFFECTS.iter().enumerate() {
-                        let color = theme::accent(def.name);
-                        ui.horizontal(|ui| {
-                            theme::effect_icon(ui, def.name, color, 22.0);
-                            let btn = egui::Button::new(egui::RichText::new(def.title).color(color))
-                                .fill(theme::tint(color, 28))
-                                .stroke(egui::Stroke::new(1.0, theme::tint(color, 120)));
-                            if ui.add_sized([86.0, 22.0], btn).clicked() {
-                                acts.push(Act::Add(def));
-                            }
-                        });
-                        if k % 2 == 1 {
-                            ui.end_row();
-                        }
+                let groups: [(&str, Vec<&'static EffectDef>); 3] = [
+                    ("Add effect", EFFECTS.iter().filter(|d| !EXPERIMENTAL.contains(&d.name) && !ZEN.contains(&d.name)).collect()),
+                    ("Zen & ethereal", EFFECTS.iter().filter(|d| ZEN.contains(&d.name)).collect()),
+                    ("Experimental", EFFECTS.iter().filter(|d| EXPERIMENTAL.contains(&d.name)).collect()),
+                ];
+                for (g, (title, defs)) in groups.iter().enumerate() {
+                    if g > 0 {
+                        ui.add_space(4.0);
                     }
-                });
+                    ui.heading(*title);
+                    egui::Grid::new(("add-grid", g)).num_columns(2).spacing([6.0, 4.0]).show(ui, |ui| {
+                        for (k, def) in defs.iter().enumerate() {
+                            let color = theme::accent(def.name);
+                            ui.horizontal(|ui| {
+                                theme::effect_icon(ui, def.name, color, 22.0);
+                                let btn = egui::Button::new(egui::RichText::new(def.title).color(color))
+                                    .fill(theme::tint(color, 28))
+                                    .stroke(egui::Stroke::new(1.0, theme::tint(color, 120)));
+                                if ui.add_sized([86.0, 22.0], btn).clicked() {
+                                    acts.push(Act::Add(def));
+                                }
+                            });
+                            if k % 2 == 1 {
+                                ui.end_row();
+                            }
+                        }
+                    });
+                }
                 ui.add_space(6.0);
                 ui.separator();
                 ui.heading("Built-in chains");
@@ -823,8 +836,8 @@ fn device_combo(ui: &mut egui::Ui, salt: &str, devices: &[String], sel: &mut Opt
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([980.0, 720.0]).with_title("guitarfx"),
+        viewport: egui::ViewportBuilder::default().with_inner_size([980.0, 720.0]).with_title("guitar-fx"),
         ..Default::default()
     };
-    eframe::run_native("guitarfx", options, Box::new(|_cc| Ok(Box::new(App::new()))))
+    eframe::run_native("guitar-fx", options, Box::new(|_cc| Ok(Box::new(App::new()))))
 }

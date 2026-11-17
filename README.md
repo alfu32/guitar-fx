@@ -1,19 +1,19 @@
-# guitarfx
+# guitar-fx
 
 An ordered, repeatable multi-effect chain for guitar and voice. Two front ends over one
-engine: a command-line tool (`guitarfx`) and a graphical one (`guitarfx-ui`). Process WAV
+engine: a command-line tool (`guitar-fx`) and a graphical one (`guitar-fx-ui`). Process WAV
 files, or run live (input → effects → output) with a low-latency buffer.
 
 ```
 cargo build --release                         # both binaries
 cargo build --release --no-default-features   # command line only (no GUI dependencies)
-./target/release/guitarfx --help
-./target/release/guitarfx-ui
+./target/release/guitar-fx --help
+./target/release/guitar-fx-ui
 ```
 
 ## The UI
 
-`guitarfx-ui` shows the chain as a stack of effect cards. Press **Start**, play, and drag
+`guitar-fx-ui` shows the chain as a stack of effect cards. Press **Start**, play, and drag
 sliders: parameter changes reach the audio thread through a command channel and are heard
 within one buffer, without resetting the effect (echo tails and reverb keep ringing).
 Add effects from the right panel, drag a card by its grip (⠿) to reorder, bypass with the
@@ -21,8 +21,8 @@ checkbox, right-click a slider to reset it. Each card shows a level history of t
 effect's output. While dragging, the spot between cards under the pointer lights up (the
 slots are always reserved, so nothing shifts). The right panel also lists built-in chains
 (`presets/builtin/`); your own saved chains are on the left
-(`~/.config/guitarfx/chains/`, `%APPDATA%\guitarfx` on Windows,
-`~/Library/Application Support/guitarfx` on macOS). The chain, gains, buffer and devices are
+(`~/.config/guitar-fx/chains/`, `%APPDATA%\guitar-fx` on Windows,
+`~/Library/Application Support/guitar-fx` on macOS). The chain, gains, buffer and devices are
 restored on the next launch. Meters show input and output peaks; the dropout counter tells you when the
 buffer is too small for your machine. Changing device or buffer size needs a Stop/Start.
 
@@ -35,23 +35,23 @@ window, vocoder bands/carrier) rebuild just that effect when changed, which rese
 - `src/effects.rs` — the effects; each updates live without losing state
 - `src/chain.rs` — the audio-thread chain plus the `Control` command channel and meters
 - `src/live.rs` — cpal input/output
-- `src/main.rs` (CLI) and `src/bin/guitarfx-ui.rs` (GUI)
+- `src/main.rs` (CLI) and `src/bin/guitar-fx-ui.rs` (GUI)
 
 ## Examples
 
 ```
 # live, default devices, 64-frame buffer
-guitarfx --compressor ratio=3 --overdrive drive=0.65 --echo time=380,mix=0.3
+guitar-fx --compressor ratio=3 --overdrive drive=0.65 --echo time=380,mix=0.3
 
 # order matters and effects may repeat
-guitarfx --overdrive 0.7 --echo --overdrive 0.2
+guitar-fx --overdrive 0.7 --echo --overdrive 0.2
 
 # file in, file out
-guitarfx -i riff.wav -o riff.fx.wav --chorus --reverb 0.3
+guitar-fx -i riff.wav -o riff.fx.wav --chorus --reverb 0.3
 
 # presets
-guitarfx --preset presets/builtin/guitar-crunch.fx
-guitarfx --compressor 3 --overdrive 0.6 --save-preset mine.fx
+guitar-fx --preset presets/builtin/guitar-crunch.fx
+guitar-fx --compressor 3 --overdrive 0.6 --save-preset mine.fx
 ```
 
 ## Effects
@@ -74,6 +74,20 @@ Each takes `name=value,name=value`; a bare number sets the first parameter (mark
 | `--tone-shift` | semitones* (0), cents (0), mix (1), mode `high`/`fast`, window ms (10, fast only) |
 | `--autotune` | amount* (1), key (C), scale (chromatic, major, minor, pentatonic, minor-pentatonic, blues), speed ms (40; 0 = hard), mode, window |
 | `--vocoder` | mix* (1), bands (16), carrier Hz (110), release ms (15) |
+| `--transient` | attack* -1..1 (-0.6; negative softens the pick, positive sharpens), time ms (15), mix (1) — transient shaper |
+| `--freeze` | mix* (0.7), sustain s (8), length ms (50), settle ms (60), sensitivity (0.5) — **prolonger**: samples the note after each pick and loops it until the next pick |
+| `--pick-noise` | amount* (0.3), decay ms (60), tone (1 = white), mode `burst`/`follow`, sensitivity — white noise on the picked note |
+| `--bitcrusher` | bits* (8), rate Hz (12000), mix (1) |
+| `--ringmod` | freq* Hz (150), mix (0.5), shape `sine`/`square` |
+| `--reverse` | mix* (0.7), time ms (400) — reversed swells |
+| `--kalimba` | mix* (0.6), octave 0..2 (1), decay ms (900), dry (1), sensitivity — each pick becomes a kalimba tine at the note's pitch |
+| `--wind` | mix* (0.5), level (0.3), follow (0.7), rate Hz (0.15), q (5) — breathy wind that follows your playing |
+| `--swell` | rise* ms (400), sensitivity — each pick fades in slowly |
+| `--shimmer` | mix* (0.4), shimmer (0.5), pitch st (12), time s (4), size m (15) — reverb fed back through a pitch shifter |
+
+The experimental and zen effects (freeze, pick-noise, bitcrusher, ringmod, reverse, kalimba,
+wind, swell, shimmer) react to the moment a string is picked. Freeze and kalimba need a single
+note at a time (they track pitch); `sensitivity` sets how easily a pick is detected.
 
 Pitch effects have two modes. `high` is the cleanest and works on chords but adds
 50+ ms. `fast` locks to the detected note period: about 10 ms, accurate on one note at a

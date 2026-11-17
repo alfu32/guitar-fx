@@ -1,14 +1,14 @@
 [package]
-name = "guitarfx"
-version = "0.5.0"
+name = "guitar-fx"
+version = "0.6.0"
 edition = "2024"
 
 [lib]
-name = "guitarfx_core"
+name = "guitar_fx_core"
 path = "src/lib.rs"
 
 [[bin]]
-name = "guitarfx"
+name = "guitar-fx"
 path = "src/main.rs"
 
 [features]
@@ -16,8 +16,8 @@ default = ["ui"]
 ui = ["dep:eframe"]
 
 [[bin]]
-name = "guitarfx-ui"
-path = "src/bin/guitarfx-ui.rs"
+name = "guitar-fx-ui"
+path = "src/bin/guitar-fx-ui.rs"
 required-features = ["ui"]
 
 [dependencies]

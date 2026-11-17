@@ -42,6 +42,8 @@ pub const NOTES: &[&str] = &["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A
 pub const SCALES: &[&str] =
     &["chromatic", "major", "minor", "pentatonic", "minor-pentatonic", "blues"];
 const MODES: &[&str] = &["high", "fast"];
+const NOISE_MODES: &[&str] = &["burst", "follow"];
+const SHAPES: &[&str] = &["sine", "square"];
 
 pub const EFFECTS: &[EffectDef] = &[
     EffectDef {
@@ -195,7 +197,116 @@ pub const EFFECTS: &[EffectDef] = &[
             num("release", 15.0, 1.0, 200.0, "ms", true),
         ],
     },
+    EffectDef {
+        name: "transient",
+        title: "Transient shaper",
+        primary: "attack",
+        params: &[
+            num("attack", -0.6, -1.0, 1.0, "", true),
+            num("time", 15.0, 2.0, 60.0, "ms", true),
+            num("mix", 1.0, 0.0, 1.0, "", true),
+        ],
+    },
+    // ---- experimental
+    EffectDef {
+        name: "freeze",
+        title: "Freeze",
+        primary: "mix",
+        params: &[
+            num("mix", 0.7, 0.0, 1.0, "", true),
+            num("sustain", 8.0, 0.2, 60.0, "s", true),
+            num("length", 50.0, 10.0, 200.0, "ms", true),
+            num("settle", 60.0, 20.0, 400.0, "ms", true),
+            num("sensitivity", 0.5, 0.0, 1.0, "", true),
+        ],
+    },
+    EffectDef {
+        name: "pick-noise",
+        title: "Pick noise",
+        primary: "amount",
+        params: &[
+            num("amount", 0.3, 0.0, 1.0, "", true),
+            num("decay", 60.0, 5.0, 800.0, "ms", true),
+            num("tone", 1.0, 0.0, 1.0, "", true),
+            choice("mode", NOISE_MODES, 0, true),
+            num("sensitivity", 0.5, 0.0, 1.0, "", true),
+        ],
+    },
+    EffectDef {
+        name: "bitcrusher",
+        title: "Bitcrusher",
+        primary: "bits",
+        params: &[
+            num("bits", 8.0, 1.0, 16.0, "", true),
+            num("rate", 12000.0, 500.0, 48000.0, "Hz", true),
+            num("mix", 1.0, 0.0, 1.0, "", true),
+        ],
+    },
+    EffectDef {
+        name: "ringmod",
+        title: "Ring mod",
+        primary: "freq",
+        params: &[
+            num("freq", 150.0, 20.0, 2000.0, "Hz", true),
+            num("mix", 0.5, 0.0, 1.0, "", true),
+            choice("shape", SHAPES, 0, true),
+        ],
+    },
+    EffectDef {
+        name: "reverse",
+        title: "Reverse",
+        primary: "mix",
+        params: &[num("mix", 0.7, 0.0, 1.0, "", true), num("time", 400.0, 50.0, 2000.0, "ms", true)],
+    },
+    // ---- zen and ethereal
+    EffectDef {
+        name: "kalimba",
+        title: "Kalimba",
+        primary: "mix",
+        params: &[
+            num("mix", 0.6, 0.0, 1.0, "", true),
+            num("octave", 1.0, 0.0, 2.0, "", true),
+            num("decay", 900.0, 100.0, 4000.0, "ms", true),
+            num("dry", 1.0, 0.0, 1.0, "", true),
+            num("sensitivity", 0.5, 0.0, 1.0, "", true),
+        ],
+    },
+    EffectDef {
+        name: "wind",
+        title: "Wind",
+        primary: "mix",
+        params: &[
+            num("mix", 0.5, 0.0, 1.0, "", true),
+            num("level", 0.3, 0.0, 1.0, "", true),
+            num("follow", 0.7, 0.0, 1.0, "", true),
+            num("rate", 0.15, 0.02, 2.0, "Hz", true),
+            num("q", 5.0, 1.0, 20.0, "", true),
+        ],
+    },
+    EffectDef {
+        name: "swell",
+        title: "Swell",
+        primary: "rise",
+        params: &[num("rise", 400.0, 50.0, 3000.0, "ms", true), num("sensitivity", 0.5, 0.0, 1.0, "", true)],
+    },
+    EffectDef {
+        name: "shimmer",
+        title: "Shimmer",
+        primary: "mix",
+        params: &[
+            num("mix", 0.4, 0.0, 1.0, "", true),
+            num("shimmer", 0.5, 0.0, 1.0, "", true),
+            num("pitch", 12.0, -12.0, 24.0, "st", true),
+            num("time", 4.0, 0.5, 10.0, "s", false),
+            num("size", 15.0, 3.0, 30.0, "m", false),
+        ],
+    },
 ];
+
+/// Effects shown under "Experimental" in the UI.
+pub const EXPERIMENTAL: &[&str] = &["freeze", "pick-noise", "bitcrusher", "ringmod", "reverse"];
+/// Effects shown under "Zen & ethereal" in the UI.
+pub const ZEN: &[&str] = &["kalimba", "wind", "swell", "shimmer"];
 
 pub fn effect_def(name: &str) -> Option<&'static EffectDef> {
     EFFECTS.iter().find(|e| e.name == name)
