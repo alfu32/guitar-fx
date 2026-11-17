@@ -1,6 +1,9 @@
 //! Graphical front end. Every control talks to the running audio chain through
 //! `fxcore::chain::Control`, so changes are heard within one audio buffer.
 
+#[path = "fxchain-ui/theme.rs"]
+mod theme;
+
 use eframe::egui;
 use fxcore::chain::{Cmd, Slot};
 use fxcore::effects::build;
@@ -375,9 +378,15 @@ impl eframe::App for App {
         egui::Panel::left("side").resizable(false).default_size(190.0).show(root, |ui| {
             ui.heading("Add effect");
             for def in EFFECTS {
-                if ui.add_sized([170.0, 22.0], egui::Button::new(def.title)).clicked() {
-                    acts.push(Act::Add(def));
-                }
+                let color = theme::accent(def.name);
+                ui.horizontal(|ui| {
+                    theme::effect_icon(ui, def.name, color, 22.0);
+                    let label = egui::RichText::new(def.title).color(color).strong();
+                    let btn = egui::Button::new(label).fill(theme::tint(color, 28)).stroke(egui::Stroke::new(1.0, theme::tint(color, 120)));
+                    if ui.add_sized([138.0, 22.0], btn).clicked() {
+                        acts.push(Act::Add(def));
+                    }
+                });
             }
             ui.separator();
             ui.heading("Presets");
@@ -409,39 +418,70 @@ impl eframe::App for App {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 for i in 0..n {
                     let (id, title) = (self.chain[i].id, self.chain[i].spec.def.title);
-                    egui::Frame::group(ui.style()).show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        ui.horizontal(|ui| {
-                            let mut on = !self.chain[i].bypass;
-                            if ui.checkbox(&mut on, "").on_hover_text("Enable / bypass").changed() {
-                                acts.push(Act::Bypass(i));
-                            }
-                            ui.strong(format!("{}. {title}", i + 1));
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.small_button("✕").on_hover_text("Remove").clicked() {
-                                    acts.push(Act::Remove(i));
+                    let color = theme::accent(self.chain[i].spec.def.name);
+                    let dim = self.chain[i].bypass;
+                    let shown = if dim { theme::tint(color, 90) } else { color };
+                    let card = egui::Frame::new()
+                        .fill(theme::tint(color, if dim { 10 } else { 26 }))
+                        .stroke(egui::Stroke::new(1.0, theme::tint(color, 110)))
+                        .corner_radius(8.0)
+                        .inner_margin(egui::Margin { left: 16, right: 10, top: 8, bottom: 8 })
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal(|ui| {
+                                let mut on = !self.chain[i].bypass;
+                                if ui.checkbox(&mut on, "").on_hover_text("Enable / bypass").changed() {
+                                    acts.push(Act::Bypass(i));
                                 }
-                                if ui.add_enabled(i + 1 < n, egui::Button::new("▼").small()).clicked() {
-                                    acts.push(Act::Move(i, 1));
-                                }
-                                if ui.add_enabled(i > 0, egui::Button::new("▲").small()).clicked() {
-                                    acts.push(Act::Move(i, -1));
-                                }
-                            });
-                        });
-                        let np = self.chain[i].spec.def.params.len();
-                        ui.add_enabled_ui(!self.chain[i].bypass, |ui| {
-                            egui::Grid::new(format!("grid-{id}")).num_columns(2).show(ui, |ui| {
-                                for p in 0..np {
-                                    ui.label(self.chain[i].spec.def.params[p].key);
-                                    if param_widget(ui, &format!("{id}"), &mut self.chain[i].spec, p) {
-                                        acts.push(Act::Param(i, p));
+                                theme::effect_icon(ui, self.chain[i].spec.def.name, shown, 28.0);
+                                ui.label(egui::RichText::new(format!("{}. {title}", i + 1)).strong().size(16.0).color(shown));
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.small_button("✕").on_hover_text("Remove").clicked() {
+                                        acts.push(Act::Remove(i));
                                     }
-                                    ui.end_row();
-                                }
+                                    if ui.add_enabled(i + 1 < n, egui::Button::new("▼").small()).clicked() {
+                                        acts.push(Act::Move(i, 1));
+                                    }
+                                    if ui.add_enabled(i > 0, egui::Button::new("▲").small()).clicked() {
+                                        acts.push(Act::Move(i, -1));
+                                    }
+                                });
+                            });
+                            let np = self.chain[i].spec.def.params.len();
+                            ui.add_enabled_ui(!self.chain[i].bypass, |ui| {
+                                egui::Grid::new(format!("grid-{id}")).num_columns(2).show(ui, |ui| {
+                                    for p in 0..np {
+                                        let key = self.chain[i].spec.def.params[p].key;
+                                        let cc = theme::control_accent(color, p);
+                                        ui.horizontal(|ui| {
+                                            theme::control_icon(ui, key, cc);
+                                            ui.label(egui::RichText::new(key).color(cc));
+                                        });
+                                        let changed = ui
+                                            .scope(|ui| {
+                                                let v = ui.visuals_mut();
+                                                v.selection.bg_fill = cc;
+                                                v.widgets.hovered.bg_stroke = egui::Stroke::new(1.5, cc);
+                                                v.widgets.active.bg_stroke = egui::Stroke::new(1.5, cc);
+                                                v.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, theme::tint(cc, 120));
+                                                param_widget(ui, &format!("{id}"), &mut self.chain[i].spec, p)
+                                            })
+                                            .inner;
+                                        if changed {
+                                            acts.push(Act::Param(i, p));
+                                        }
+                                        ui.end_row();
+                                    }
+                                });
                             });
                         });
-                    });
+                    let r = card.response.rect;
+                    ui.painter().rect_filled(
+                        egui::Rect::from_min_max(r.left_top(), egui::pos2(r.left() + 6.0, r.bottom())),
+                        egui::CornerRadius { nw: 8, sw: 8, ne: 0, se: 0 },
+                        shown,
+                    );
+                    ui.add_space(4.0);
                 }
             });
         });
