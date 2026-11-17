@@ -18,8 +18,10 @@ sliders: parameter changes reach the audio thread through a command channel and 
 within one buffer, without resetting the effect (echo tails and reverb keep ringing).
 Add effects from the right panel, drag a card by its grip (⠿) to reorder, bypass with the
 checkbox, right-click a slider to reset it. Each card shows a level history of that
-effect's output. The right panel also lists built-in chains (`presets/builtin/`) and your own
-saved chains (`~/.config/guitarfx/chains/`, `%APPDATA%\guitarfx` on Windows,
+effect's output. While dragging, the spot between cards under the pointer lights up (the
+slots are always reserved, so nothing shifts). The right panel also lists built-in chains
+(`presets/builtin/`); your own saved chains are on the left
+(`~/.config/guitarfx/chains/`, `%APPDATA%\guitarfx` on Windows,
 `~/Library/Application Support/guitarfx` on macOS). The chain, gains, buffer and devices are
 restored on the next launch. Meters show input and output peaks; the dropout counter tells you when the
 buffer is too small for your machine. Changing device or buffer size needs a Stop/Start.

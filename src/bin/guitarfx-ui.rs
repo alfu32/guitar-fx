@@ -17,6 +17,8 @@ use std::time::{Duration, Instant};
 const BUFFERS: [u32; 6] = [32, 64, 128, 256, 512, 1024];
 
 const HISTORY: usize = 72;
+/// Height of the always-present drop slot between cards; constant so nothing shifts while dragging.
+const GAP: f32 = 18.0;
 
 /// Where the session and the user's own chains live.
 fn config_dir() -> PathBuf {
@@ -80,8 +82,8 @@ struct App {
     status: String,
     shown_in: f32,
     shown_out: f32,
-    /// Card rectangles from the last frame, used to find the drop position when dragging.
-    card_rects: Vec<egui::Rect>,
+    /// The reserved drop slots (one before every card and one after the last), from the last frame.
+    gap_rects: Vec<egui::Rect>,
     dragging: Option<usize>,
     last_hist: Instant,
     saved_session: String,
@@ -112,7 +114,7 @@ impl App {
             status: String::new(),
             shown_in: 0.0,
             shown_out: 0.0,
-            card_rects: Vec::new(),
+            gap_rects: Vec::new(),
             dragging: None,
             last_hist: Instant::now(),
             saved_session: String::new(),
@@ -561,6 +563,31 @@ impl eframe::App for App {
         let mut load_builtin: Option<usize> = None;
         let mut load_user: Option<String> = None;
         let mut delete_user: Option<String> = None;
+        egui::Panel::left("mine").resizable(false).default_size(230.0).show(root, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                ui.heading("My chains");
+                if self.user_chains.is_empty() {
+                    ui.weak("Nothing saved yet.");
+                }
+                for name in &self.user_chains {
+                    ui.horizontal(|ui| {
+                        if ui.add_sized([170.0, 22.0], egui::Button::new(name)).clicked() {
+                            load_user = Some(name.clone());
+                        }
+                        if ui.small_button("✕").on_hover_text("Delete this saved chain").clicked() {
+                            delete_user = Some(name.clone());
+                        }
+                    });
+                }
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.chain_name).desired_width(100.0));
+                    if ui.button("Save chain").clicked() {
+                        self.save_user_chain();
+                    }
+                });
+                ui.weak("Stored in your config folder.").on_hover_text(Self::chains_dir().display().to_string());
+            });
+        });
         egui::Panel::right("tools").resizable(false).default_size(270.0).show(root, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.heading("Add effect");
@@ -590,29 +617,6 @@ impl eframe::App for App {
                         load_builtin = Some(k);
                     }
                 }
-                ui.add_space(6.0);
-                ui.separator();
-                ui.heading("My chains");
-                if self.user_chains.is_empty() {
-                    ui.weak("Nothing saved yet.");
-                }
-                for name in &self.user_chains {
-                    ui.horizontal(|ui| {
-                        if ui.add_sized([220.0, 22.0], egui::Button::new(name)).clicked() {
-                            load_user = Some(name.clone());
-                        }
-                        if ui.small_button("✕").on_hover_text("Delete this saved chain").clicked() {
-                            delete_user = Some(name.clone());
-                        }
-                    });
-                }
-                ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut self.chain_name).desired_width(150.0));
-                    if ui.button("Save chain").clicked() {
-                        self.save_user_chain();
-                    }
-                });
-                ui.weak(format!("Saved in {}", Self::chains_dir().display()));
             });
         });
         if let Some(k) = load_builtin {
@@ -627,45 +631,85 @@ impl eframe::App for App {
             self.scan_chains();
         }
 
-        let mut new_rects: Vec<egui::Rect> = Vec::new();
+        // Which slot would receive the dragged card (never one that leaves it where it is).
+        let drop_slot: Option<usize> = match (self.dragging, ctx.pointer_interact_pos()) {
+            (Some(i), Some(p)) => self
+                .gap_rects
+                .iter()
+                .enumerate()
+                .filter(|(k, _)| *k != i && *k != i + 1)
+                .min_by(|a, b| (a.1.center().y - p.y).abs().total_cmp(&(b.1.center().y - p.y).abs()))
+                .map(|(k, _)| k),
+            _ => None,
+        };
+        let mut new_gaps: Vec<egui::Rect> = Vec::new();
         let mut drop_at: Option<(usize, usize)> = None;
         let mut drag_now: Option<usize> = None;
         egui::CentralPanel::default().show(root, |ui| {
             if self.chain.is_empty() {
                 ui.centered_and_justified(|ui| {
-                    ui.label("The chain is empty — add an effect on the right.");
+                    ui.label("The chain is empty — add an effect from the panel on the right.");
                 });
                 return;
             }
             let n = self.chain.len();
             egui::ScrollArea::vertical().show(ui, |ui| {
-                for i in 0..n {
+                if self.dragging.is_some() {
+                    // Scroll when the card is held near the top or bottom edge.
+                    if let Some(p) = ctx.pointer_interact_pos() {
+                        let view = ui.clip_rect();
+                        let speed = |d: f32| ((40.0 - d) / 40.0).clamp(0.0, 1.0) * 14.0;
+                        let dy = speed(p.y - view.top()) - speed(view.bottom() - p.y);
+                        if dy != 0.0 {
+                            ui.scroll_with_delta(egui::vec2(0.0, dy));
+                        }
+                    }
+                    ctx.request_repaint();
+                }
+                let dragged_color = self.dragging.map(|d| theme::accent(self.chain[d.min(n - 1)].spec.def.name));
+                for i in 0..=n {
+                    // The slot before card i: always the same height, lit up when it is the target.
+                    let (slot, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), GAP), egui::Sense::hover());
+                    new_gaps.push(slot);
+                    if let (Some(c), true) = (dragged_color, drop_slot == Some(i)) {
+                        let inner = slot.shrink2(egui::vec2(0.0, 1.0));
+                        ui.painter().rect_filled(inner, 6.0, theme::tint(c, 90));
+                        ui.painter().rect_stroke(inner, 6.0, egui::Stroke::new(2.0, c), egui::StrokeKind::Inside);
+                    } else if dragged_color.is_some() && self.dragging != Some(i) && self.dragging.map(|d| d + 1) != Some(i) {
+                        let y = slot.center().y;
+                        ui.painter().line_segment(
+                            [egui::pos2(slot.left() + 12.0, y), egui::pos2(slot.right() - 12.0, y)],
+                            egui::Stroke::new(1.0, egui::Color32::from_white_alpha(40)),
+                        );
+                    }
+                    if i == n {
+                        break;
+                    }
                     let (id, title) = (self.chain[i].id, self.chain[i].spec.def.title);
                     let color = theme::accent(self.chain[i].spec.def.name);
                     let dim = self.chain[i].bypass;
                     let shown = if dim { theme::tint(color, 90) } else { color };
                     let lifted = self.dragging == Some(i);
                     let card = egui::Frame::new()
-                        .fill(theme::tint(color, if dim { 10 } else if lifted { 50 } else { 26 }))
-                        .stroke(egui::Stroke::new(if lifted { 2.0 } else { 1.0 }, theme::tint(color, 110)))
+                        .fill(theme::tint(color, if dim { 10 } else { 26 }))
+                        .stroke(egui::Stroke::new(1.0, theme::tint(color, 110)))
                         .corner_radius(8.0)
                         .inner_margin(egui::Margin { left: 12, right: 10, top: 8, bottom: 8 })
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
+                            if lifted {
+                                // The card stays where it is, faded: its spot is not given away.
+                                ui.set_opacity(0.4);
+                            }
                             ui.horizontal(|ui| {
                                 let g = grip(ui, shown);
                                 if g.dragged() {
                                     drag_now = Some(i);
                                 }
                                 if g.drag_stopped() {
-                                    if let Some(p) = ctx.pointer_interact_pos() {
-                                        let to = self
-                                            .card_rects
-                                            .iter()
-                                            .enumerate()
-                                            .filter(|(j, r)| *j != i && r.center().y < p.y)
-                                            .count();
-                                        drop_at = Some((i, to));
+                                    if let Some(k) = drop_slot {
+                                        // Slot k sits before card k; after removing card i the index shifts.
+                                        drop_at = Some((i, if k > i { k - 1 } else { k }));
                                     }
                                 }
                                 let mut on = !self.chain[i].bypass;
@@ -712,35 +756,39 @@ impl eframe::App for App {
                             });
                         });
                     let r = card.response.rect;
-                    new_rects.push(r);
                     ui.painter().rect_filled(
                         egui::Rect::from_min_max(r.left_top(), egui::pos2(r.left() + 6.0, r.bottom())),
                         egui::CornerRadius { nw: 8, sw: 8, ne: 0, se: 0 },
                         shown,
                     );
-                    ui.add_space(4.0);
                 }
 
-                // Insertion marker while a card is being dragged.
-                if let (Some(i), Some(p)) = (self.dragging, ctx.pointer_interact_pos()) {
-                    let others: Vec<&egui::Rect> =
-                        self.card_rects.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, r)| r).collect();
-                    if let Some(first) = others.first() {
-                        let to = others.iter().filter(|r| r.center().y < p.y).count();
-                        let y = if to < others.len() { others[to].top() - 2.0 } else { others[others.len() - 1].bottom() + 2.0 };
-                        let c = theme::accent(self.chain[i].spec.def.name);
-                        ui.painter().line_segment(
-                            [egui::pos2(first.left(), y), egui::pos2(first.right(), y)],
-                            egui::Stroke::new(3.0, c),
-                        );
-                    }
-                }
             });
         });
-        self.card_rects = new_rects;
+        self.gap_rects = new_gaps;
         self.dragging = drag_now;
-        if self.dragging.is_some() {
+        if let (Some(i), Some(p)) = (self.dragging, ctx.pointer_interact_pos()) {
             ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+            if let Some(fx) = self.chain.get(i) {
+                let color = theme::accent(fx.spec.def.name);
+                egui::Area::new(egui::Id::unique("drag-ghost"))
+                    .order(egui::Order::Tooltip)
+                    .fixed_pos(p + egui::vec2(14.0, -16.0))
+                    .interactable(false)
+                    .show(&ctx, |ui| {
+                        egui::Frame::new()
+                            .fill(theme::tint(color, 235))
+                            .corner_radius(8.0)
+                            .inner_margin(egui::Margin::symmetric(10, 6))
+                            .shadow(egui::Shadow { offset: [0, 3], blur: 12, spread: 0, color: egui::Color32::from_black_alpha(120) })
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    theme::effect_icon(ui, fx.spec.def.name, egui::Color32::WHITE, 22.0);
+                                    ui.label(egui::RichText::new(fx.spec.def.title).strong().color(egui::Color32::WHITE));
+                                });
+                            });
+                    });
+            }
         }
         if let Some((from, to)) = drop_at {
             acts.push(Act::MoveTo(from, to));
