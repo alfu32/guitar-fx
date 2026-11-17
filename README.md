@@ -1,26 +1,26 @@
-# fxchain
+# guitarfx
 
 An ordered, repeatable multi-effect chain for guitar and voice. Two front ends over one
-engine: a command-line tool (`fxchain`) and a graphical one (`fxchain-ui`). Process WAV
+engine: a command-line tool (`guitarfx`) and a graphical one (`guitarfx-ui`). Process WAV
 files, or run live (input → effects → output) with a low-latency buffer.
 
 ```
 cargo build --release                         # both binaries
 cargo build --release --no-default-features   # command line only (no GUI dependencies)
-./target/release/fxchain --help
-./target/release/fxchain-ui
+./target/release/guitarfx --help
+./target/release/guitarfx-ui
 ```
 
 ## The UI
 
-`fxchain-ui` shows the chain as a stack of effect cards. Press **Start**, play, and drag
+`guitarfx-ui` shows the chain as a stack of effect cards. Press **Start**, play, and drag
 sliders: parameter changes reach the audio thread through a command channel and are heard
 within one buffer, without resetting the effect (echo tails and reverb keep ringing).
 Add effects from the right panel, drag a card by its grip (⠿) to reorder, bypass with the
 checkbox, right-click a slider to reset it. Each card shows a level history of that
 effect's output. The right panel also lists built-in chains (`presets/builtin/`) and your own
-saved chains (`~/.config/fxchain/chains/`, `%APPDATA%\fxchain` on Windows,
-`~/Library/Application Support/fxchain` on macOS). The chain, gains, buffer and devices are
+saved chains (`~/.config/guitarfx/chains/`, `%APPDATA%\guitarfx` on Windows,
+`~/Library/Application Support/guitarfx` on macOS). The chain, gains, buffer and devices are
 restored on the next launch. Meters show input and output peaks; the dropout counter tells you when the
 buffer is too small for your machine. Changing device or buffer size needs a Stop/Start.
 
@@ -33,23 +33,23 @@ window, vocoder bands/carrier) rebuild just that effect when changed, which rese
 - `src/effects.rs` — the effects; each updates live without losing state
 - `src/chain.rs` — the audio-thread chain plus the `Control` command channel and meters
 - `src/live.rs` — cpal input/output
-- `src/main.rs` (CLI) and `src/bin/fxchain-ui.rs` (GUI)
+- `src/main.rs` (CLI) and `src/bin/guitarfx-ui.rs` (GUI)
 
 ## Examples
 
 ```
 # live, default devices, 64-frame buffer
-fxchain --compressor ratio=3 --overdrive drive=0.65 --echo time=380,mix=0.3
+guitarfx --compressor ratio=3 --overdrive drive=0.65 --echo time=380,mix=0.3
 
 # order matters and effects may repeat
-fxchain --overdrive 0.7 --echo --overdrive 0.2
+guitarfx --overdrive 0.7 --echo --overdrive 0.2
 
 # file in, file out
-fxchain -i riff.wav -o riff.fx.wav --chorus --reverb 0.3
+guitarfx -i riff.wav -o riff.fx.wav --chorus --reverb 0.3
 
 # presets
-fxchain --preset presets/builtin/guitar-crunch.fx
-fxchain --compressor 3 --overdrive 0.6 --save-preset mine.fx
+guitarfx --preset presets/builtin/guitar-crunch.fx
+guitarfx --compressor 3 --overdrive 0.6 --save-preset mine.fx
 ```
 
 ## Effects

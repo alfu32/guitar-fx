@@ -1,15 +1,15 @@
 //! Graphical front end. Every control talks to the running audio chain through
-//! `fxcore::chain::Control`, so changes are heard within one audio buffer.
+//! `guitarfx_core::chain::Control`, so changes are heard within one audio buffer.
 
-#[path = "fxchain-ui/theme.rs"]
+#[path = "guitarfx-ui/theme.rs"]
 mod theme;
 
 use eframe::egui;
-use fxcore::chain::{Cmd, Slot};
-use fxcore::effects::build;
-use fxcore::live::{self, LiveOpts, Running, DEFAULT_BUFFER};
-use fxcore::params::{EffectDef, Kind, Spec, Value, EFFECTS};
-use fxcore::preset::{Preset, BUILTIN};
+use guitarfx_core::chain::{Cmd, Slot};
+use guitarfx_core::effects::build;
+use guitarfx_core::live::{self, LiveOpts, Running, DEFAULT_BUFFER};
+use guitarfx_core::params::{EffectDef, Kind, Spec, Value, EFFECTS};
+use guitarfx_core::preset::{Preset, BUILTIN};
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -20,6 +20,16 @@ const HISTORY: usize = 72;
 
 /// Where the session and the user's own chains live.
 fn config_dir() -> PathBuf {
+    let dir = config_base().join("guitarfx");
+    // The program was called fxchain before it was renamed; carry the old settings over.
+    let old = config_base().join("fxchain");
+    if !dir.exists() && old.exists() {
+        let _ = std::fs::rename(&old, &dir);
+    }
+    dir
+}
+
+fn config_base() -> PathBuf {
     let home = || std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
     let base = if cfg!(windows) {
         std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(home)
@@ -28,7 +38,7 @@ fn config_dir() -> PathBuf {
     } else {
         std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".config"))
     };
-    base.join("fxchain")
+    base
 }
 
 struct Fx {
@@ -111,7 +121,7 @@ impl App {
         app.scan_chains();
         if !app.restore_session() {
             for name in ["compressor", "overdrive", "reverb"] {
-                app.add_local(fxcore::params::effect_def(name).unwrap());
+                app.add_local(guitarfx_core::params::effect_def(name).unwrap());
             }
         }
         app.saved_session = app.session_text();
@@ -765,8 +775,8 @@ fn device_combo(ui: &mut egui::Ui, salt: &str, devices: &[String], sel: &mut Opt
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([980.0, 720.0]).with_title("fxchain"),
+        viewport: egui::ViewportBuilder::default().with_inner_size([980.0, 720.0]).with_title("guitarfx"),
         ..Default::default()
     };
-    eframe::run_native("fxchain", options, Box::new(|_cc| Ok(Box::new(App::new()))))
+    eframe::run_native("guitarfx", options, Box::new(|_cc| Ok(Box::new(App::new()))))
 }

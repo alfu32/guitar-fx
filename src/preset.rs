@@ -72,7 +72,7 @@ impl Preset {
     }
 
     pub fn to_text(&self) -> String {
-        let mut out = String::from("# fxchain preset — effects run top to bottom\n");
+        let mut out = String::from("# guitarfx preset — effects run top to bottom\n");
         if let Some(b) = self.buffer {
             out += &format!("buffer {b}\n");
         }

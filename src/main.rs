@@ -1,22 +1,22 @@
-use fxcore::chain::Chain;
-use fxcore::live::{self, LiveOpts};
-use fxcore::params::{effect_def, Kind, Spec, EFFECTS};
-use fxcore::preset::{parse_db, Preset};
+use guitarfx_core::chain::Chain;
+use guitarfx_core::live::{self, LiveOpts};
+use guitarfx_core::params::{effect_def, Kind, Spec, EFFECTS};
+use guitarfx_core::preset::{parse_db, Preset};
 use std::process::ExitCode;
 
 fn help() -> String {
     let mut s = String::from(
         "\
-fxchain — an ordered, repeatable multi-effect chain
+guitarfx — an ordered, repeatable multi-effect chain
 
 USAGE
-  fxchain [OPTIONS] [EFFECTS...]
-  fxchain --input in.wav --output out.wav [EFFECTS...]    process a file
-  fxchain [EFFECTS...]                                     live: input -> effects -> output
-  fxchain-ui                                               the graphical version
+  guitarfx [OPTIONS] [EFFECTS...]
+  guitarfx --input in.wav --output out.wav [EFFECTS...]    process a file
+  guitarfx [EFFECTS...]                                     live: input -> effects -> output
+  guitarfx-ui                                               the graphical version
 
 Effects run in the order given and may be repeated, e.g.
-  fxchain --compressor ratio=4 --overdrive drive=0.7 --echo time=400 --overdrive 0.2
+  guitarfx --compressor ratio=4 --overdrive drive=0.7 --echo time=400 --overdrive 0.2
 
 Each effect takes name=value pairs separated by commas. A bare number sets the
 first parameter listed (marked *). Defaults are in parentheses.

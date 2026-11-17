@@ -1526,18 +1526,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fxchain"
-version = "0.4.0"
-dependencies = [
- "cpal",
- "eframe",
- "fundsp",
- "hound",
- "ringbuf",
- "signalsmith-stretch",
-]
-
-[[package]]
 name = "generic-array"
 version = "1.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1722,6 +1710,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b17e70c989c36bad147b27a58d148c0741c51448aa5653436547323e524d0ab"
 dependencies = [
  "euclid",
+]
+
+[[package]]
+name = "guitarfx"
+version = "0.4.1"
+dependencies = [
+ "cpal",
+ "eframe",
+ "fundsp",
+ "hound",
+ "ringbuf",
+ "signalsmith-stretch",
 ]
 
 [[package]]
