@@ -1,0 +1,11 @@
+[package]
+name = "fxchain"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cpal = "0.18"
+fundsp = "0.23"
+hound = "3.5"
+ringbuf = "0.4"
+signalsmith-stretch = "0.1"
