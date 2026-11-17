@@ -1,12 +1,36 @@
 # fxchain
 
-An ordered, repeatable multi-effect chain for guitar and voice, on the command line.
-Process WAV files or run live (input → effects → output) with a low-latency buffer.
+An ordered, repeatable multi-effect chain for guitar and voice. Two front ends over one
+engine: a command-line tool (`fxchain`) and a graphical one (`fxchain-ui`). Process WAV
+files, or run live (input → effects → output) with a low-latency buffer.
 
 ```
-cargo build --release
+cargo build --release                         # both binaries
+cargo build --release --no-default-features   # command line only (no GUI dependencies)
 ./target/release/fxchain --help
+./target/release/fxchain-ui
 ```
+
+## The UI
+
+`fxchain-ui` shows the chain as a stack of effect cards. Press **Start**, play, and drag
+sliders: parameter changes reach the audio thread through a command channel and are heard
+within one buffer, without resetting the effect (echo tails and reverb keep ringing).
+Add effects from the left panel, reorder with ▲ ▼, bypass with the checkbox, right-click a
+slider to reset it. Presets in `presets/` load with one click, and **Save** writes the
+current chain. Meters show input and output peaks; the dropout counter tells you when the
+buffer is too small for your machine. Changing device or buffer size needs a Stop/Start.
+
+Parameters marked non-live in the schema (reverb time/size/damping, pitch-shift mode and
+window, vocoder bands/carrier) rebuild just that effect when changed, which resets its tail.
+
+## Layout
+
+- `src/params.rs` — one schema (names, ranges, defaults) drives the CLI, presets and the UI
+- `src/effects.rs` — the effects; each updates live without losing state
+- `src/chain.rs` — the audio-thread chain plus the `Control` command channel and meters
+- `src/live.rs` — cpal input/output
+- `src/main.rs` (CLI) and `src/bin/fxchain-ui.rs` (GUI)
 
 ## Examples
 
@@ -77,5 +101,6 @@ Underruns while playing mean the CPU is too busy for the buffer: raise `--buffer
 
 ## Tests
 
-`cargo test --release` checks pitch accuracy (fast and high shifters, autotune, detector across
+`cargo test --release` also sweeps every live parameter of every effect and checks the control
+channel (set, insert, move, remove, bypass). It checks pitch accuracy (fast and high shifters, autotune, detector across
 the guitar range), effect order and repetition, and parameter validation.

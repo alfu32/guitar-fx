@@ -1,10 +1,28 @@
 [package]
 name = "fxchain"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
+
+[lib]
+name = "fxcore"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fxchain"
+path = "src/main.rs"
+
+[features]
+default = ["ui"]
+ui = ["dep:eframe"]
+
+[[bin]]
+name = "fxchain-ui"
+path = "src/bin/fxchain-ui.rs"
+required-features = ["ui"]
 
 [dependencies]
 cpal = "0.18"
+eframe = { version = "0.37.0", optional = true }
 fundsp = "0.23"
 hound = "3.5"
 ringbuf = "0.4"

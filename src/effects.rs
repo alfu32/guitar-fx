@@ -1,172 +1,50 @@
-//! The effects. Every effect is mono and processes blocks in place; a chain is
-//! built per audio channel so stereo files keep their image.
+//! The effects. Every effect is mono and processes blocks in place. Each keeps its own
+//! `Spec` and recomputes derived values in `configure`, so `live` parameters can change
+//! on a running effect without resetting its state (no clicks, tails survive).
 
-use crate::params::Params;
+use crate::params::{Spec, Value};
 use fundsp::prelude32 as fs;
 use fundsp::prelude32::AudioUnit;
 use signalsmith_stretch::Stretch;
+use std::f32::consts::{PI, TAU};
 
 pub trait Effect: Send {
     fn process(&mut self, buf: &mut [f32]);
+    /// Change a parameter flagged `live` in the schema.
+    fn set(&mut self, _key: &str, _value: Value) {}
 }
 
-/// A parsed effect from the command line (not yet bound to a sample rate).
-pub struct Spec {
-    pub name: &'static str,
-    pub raw: String,
-    pub params: Params,
-}
-
-pub const EFFECT_NAMES: &[&str] = &[
-    "overdrive",
-    "compressor",
-    "echo",
-    "delay",
-    "chorus",
-    "harmonics",
-    "tone-shift",
-    "vocoder",
-    "autotune",
-    "tremolo",
-    "flanger",
-    "phaser",
-    "wah",
-    "reverb",
-];
-
-/// (primary parameter, all parameters) for an effect name.
-fn schema(name: &str) -> Option<(&'static str, &'static [&'static str])> {
-    Some(match name {
-        "overdrive" => ("drive", &["drive", "tone", "level"]),
-        "compressor" => ("ratio", &["threshold", "ratio", "attack", "release", "makeup"]),
-        "echo" => ("mix", &["time", "feedback", "tone", "mix"]),
-        "delay" => ("time", &["time", "feedback", "mix"]),
-        "chorus" => ("depth", &["rate", "depth", "mix"]),
-        "harmonics" => ("mix", &["drive", "freq", "mix"]),
-        "tone-shift" => ("semitones", &["semitones", "cents", "mix", "mode", "window"]),
-        "vocoder" => ("mix", &["bands", "carrier", "release", "mix"]),
-        "autotune" => ("amount", &["key", "scale", "speed", "amount", "mode", "window"]),
-        "tremolo" => ("depth", &["rate", "depth"]),
-        "flanger" => ("depth", &["rate", "depth", "feedback", "mix"]),
-        "phaser" => ("depth", &["rate", "depth", "feedback", "mix"]),
-        "wah" => ("sensitivity", &["sensitivity", "rate", "q", "min", "max", "mix"]),
-        "reverb" => ("mix", &["mix", "time", "size", "damping"]),
-        _ => return None,
-    })
+macro_rules! live_set {
+    () => {
+        fn set(&mut self, key: &str, value: Value) {
+            self.spec.set(key, value);
+            self.configure();
+        }
+    };
 }
 
 pub fn parse_spec(name: &str, raw: &str) -> Result<Spec, String> {
-    let (primary, allowed) = schema(name).ok_or_else(|| format!("unknown effect '{name}'"))?;
-    let name: &'static str = EFFECT_NAMES.iter().find(|n| **n == name).unwrap();
-    Ok(Spec { name, raw: raw.trim().to_string(), params: Params::parse(name, raw, primary, allowed)? })
+    Spec::parse(name, raw)
 }
 
-pub fn build(spec: &Spec, sr: f32) -> Result<Box<dyn Effect>, String> {
-    let p = &spec.params;
-    Ok(match spec.name {
-        "overdrive" => Box::new(Overdrive::new(
-            p.num("drive", 0.5, 0.0, 1.0)?,
-            p.num("tone", 0.6, 0.0, 1.0)?,
-            p.num("level", 1.0, 0.0, 2.0)?,
-            sr,
-        )),
-        "compressor" => {
-            let threshold = p.num("threshold", -18.0, -60.0, 0.0)?;
-            let ratio = p.num("ratio", 4.0, 1.0, 20.0)?;
-            let makeup = match p.text("makeup", "auto").as_str() {
-                "auto" => -threshold * (1.0 - 1.0 / ratio) * 0.25,
-                v => v
-                    .parse::<f32>()
-                    .map_err(|_| format!("--compressor: makeup='{v}' is not a number or 'auto'"))?,
-            };
-            Box::new(Compressor::new(
-                threshold,
-                ratio,
-                p.num("attack", 10.0, 0.1, 200.0)?,
-                p.num("release", 120.0, 5.0, 2000.0)?,
-                makeup,
-                sr,
-            ))
-        }
-        "echo" => Box::new(DelayFx::new(
-            p.num("time", 350.0, 1.0, 2000.0)?,
-            p.num("feedback", 0.45, 0.0, 0.95)?,
-            Some(p.num("tone", 0.5, 0.0, 1.0)?),
-            p.num("mix", 0.4, 0.0, 1.0)?,
-            sr,
-        )),
-        "delay" => Box::new(DelayFx::new(
-            p.num("time", 300.0, 1.0, 2000.0)?,
-            p.num("feedback", 0.3, 0.0, 0.95)?,
-            None,
-            p.num("mix", 0.5, 0.0, 1.0)?,
-            sr,
-        )),
-        "chorus" => Box::new(Chorus::new(
-            p.num("rate", 0.6, 0.05, 10.0)?,
-            p.num("depth", 0.5, 0.0, 1.0)?,
-            p.num("mix", 0.5, 0.0, 1.0)?,
-            sr,
-        )),
-        "harmonics" => Box::new(Harmonics::new(
-            p.num("drive", 0.5, 0.0, 1.0)?,
-            p.num("freq", 2000.0, 200.0, 12000.0)?,
-            p.num("mix", 0.3, 0.0, 1.0)?,
-            sr,
-        )),
-        "tone-shift" => Box::new(ToneShift::new(
-            p.num("semitones", 0.0, -24.0, 24.0)? + p.num("cents", 0.0, -100.0, 100.0)? / 100.0,
-            p.num("mix", 1.0, 0.0, 1.0)?,
-            shifter(&p.text("mode", "high"), p.num("window", 10.0, 4.0, 40.0)?, sr)?,
-        )),
-        "vocoder" => Box::new(Vocoder::new(
-            p.num("bands", 16.0, 4.0, 32.0)? as usize,
-            p.num("carrier", 110.0, 30.0, 880.0)?,
-            p.num("release", 15.0, 1.0, 200.0)?,
-            p.num("mix", 1.0, 0.0, 1.0)?,
-            sr,
-        )),
-        "autotune" => Box::new(Autotune::new(
-            &p.text("key", "C"),
-            &p.text("scale", "chromatic"),
-            p.num("speed", 40.0, 0.0, 500.0)?,
-            p.num("amount", 1.0, 0.0, 1.0)?,
-            sr,
-            shifter(&p.text("mode", "high"), p.num("window", 10.0, 4.0, 40.0)?, sr)?,
-        )?),
-        "tremolo" => Box::new(Tremolo::new(p.num("rate", 5.0, 0.1, 20.0)?, p.num("depth", 0.5, 0.0, 1.0)?, sr)),
-        "flanger" => Box::new(Flanger::new(
-            p.num("rate", 0.3, 0.02, 5.0)?,
-            p.num("depth", 0.7, 0.0, 1.0)?,
-            p.num("feedback", 0.5, -0.95, 0.95)?,
-            p.num("mix", 0.5, 0.0, 1.0)?,
-            sr,
-        )),
-        "phaser" => Box::new(Phaser::new(
-            p.num("rate", 0.5, 0.02, 5.0)?,
-            p.num("depth", 0.7, 0.0, 1.0)?,
-            p.num("feedback", 0.5, -0.95, 0.95)?,
-            p.num("mix", 0.5, 0.0, 1.0)?,
-            sr,
-        )),
-        "wah" => Box::new(Wah::new(
-            p.num("sensitivity", 0.6, 0.0, 1.0)?,
-            p.num("rate", 0.0, 0.0, 10.0)?,
-            p.num("q", 5.0, 1.0, 15.0)?,
-            p.num("min", 350.0, 100.0, 2000.0)?,
-            p.num("max", 2200.0, 500.0, 6000.0)?,
-            p.num("mix", 1.0, 0.0, 1.0)?,
-            sr,
-        )),
-        "reverb" => Box::new(Reverb::new(
-            p.num("mix", 0.3, 0.0, 1.0)?,
-            p.num("time", 2.0, 0.2, 10.0)?,
-            p.num("size", 10.0, 3.0, 30.0)?,
-            p.num("damping", 0.5, 0.0, 1.0)?,
-            sr,
-        )),
-        other => return Err(format!("unknown effect '{other}'")),
-    })
+pub fn build(spec: &Spec, sr: f32) -> Box<dyn Effect> {
+    let spec = spec.clone();
+    match spec.def.name {
+        "overdrive" => Box::new(Overdrive::new(spec, sr)),
+        "compressor" => Box::new(Compressor::new(spec, sr)),
+        "echo" | "delay" => Box::new(DelayFx::new(spec, sr)),
+        "chorus" => Box::new(Chorus::new(spec, sr)),
+        "flanger" => Box::new(Flanger::new(spec, sr)),
+        "phaser" => Box::new(Phaser::new(spec, sr)),
+        "tremolo" => Box::new(Tremolo::new(spec, sr)),
+        "wah" => Box::new(Wah::new(spec, sr)),
+        "harmonics" => Box::new(Harmonics::new(spec, sr)),
+        "reverb" => Box::new(Reverb::new(spec, sr)),
+        "tone-shift" => Box::new(ToneShift::new(spec, sr)),
+        "autotune" => Box::new(Autotune::new(spec, sr)),
+        "vocoder" => Box::new(Vocoder::new(spec, sr)),
+        other => unreachable!("no effect named {other}"),
+    }
 }
 
 fn unit(mut u: Box<dyn AudioUnit>, sr: f32) -> Box<dyn AudioUnit> {
@@ -178,38 +56,51 @@ fn coef(ms: f32, sr: f32) -> f32 {
     (-1.0 / (ms * 0.001 * sr)).exp()
 }
 
+fn one_pole(cutoff: f32, sr: f32) -> f32 {
+    1.0 - (-TAU * cutoff / sr).exp()
+}
+
 // ---------------------------------------------------------------- overdrive
 
 struct Overdrive {
-    shaper: Box<dyn AudioUnit>,
-    tone: Box<dyn AudioUnit>,
+    spec: Spec,
+    sr: f32,
+    gain: f32,
     makeup: f32,
+    a: f32,
+    lp: f32,
 }
 
 impl Overdrive {
-    fn new(drive: f32, tone: f32, level: f32, sr: f32) -> Self {
-        let gain = 1.0 + drive * 39.0;
-        let cutoff = 500.0 * 24.0_f32.powf(tone); // 500 Hz .. 12 kHz
-        Self {
-            shaper: unit(Box::new(fs::shape(fs::Tanh(gain))), sr),
-            tone: unit(Box::new(fs::lowpole_hz(cutoff)), sr),
-            makeup: level / gain.powf(0.35),
-        }
+    fn new(spec: Spec, sr: f32) -> Self {
+        let mut s = Self { spec, sr, gain: 1.0, makeup: 1.0, a: 1.0, lp: 0.0 };
+        s.configure();
+        s
+    }
+
+    fn configure(&mut self) {
+        self.gain = 1.0 + self.spec.num("drive") * 39.0;
+        self.makeup = self.spec.num("level") / self.gain.powf(0.35);
+        self.a = one_pole(500.0 * 24.0_f32.powf(self.spec.num("tone")), self.sr); // 500 Hz .. 12 kHz
     }
 }
 
 impl Effect for Overdrive {
     fn process(&mut self, buf: &mut [f32]) {
         for x in buf {
-            let y = self.shaper.filter_mono(*x);
-            *x = self.tone.filter_mono(y) * self.makeup;
+            let y = (self.gain * *x).tanh();
+            self.lp += self.a * (y - self.lp);
+            *x = self.lp * self.makeup;
         }
     }
+    live_set!();
 }
 
 // --------------------------------------------------------------- compressor
 
 struct Compressor {
+    spec: Spec,
+    sr: f32,
     threshold: f32,
     slope: f32,
     attack: f32,
@@ -219,15 +110,22 @@ struct Compressor {
 }
 
 impl Compressor {
-    fn new(threshold: f32, ratio: f32, attack_ms: f32, release_ms: f32, makeup: f32, sr: f32) -> Self {
-        Self {
-            threshold,
-            slope: 1.0 - 1.0 / ratio,
-            attack: coef(attack_ms, sr),
-            release: coef(release_ms, sr),
-            makeup,
-            env: 0.0,
-        }
+    fn new(spec: Spec, sr: f32) -> Self {
+        let mut s = Self { spec, sr, threshold: 0.0, slope: 0.0, attack: 0.0, release: 0.0, makeup: 0.0, env: 0.0 };
+        s.configure();
+        s
+    }
+
+    fn configure(&mut self) {
+        let ratio = self.spec.num("ratio");
+        self.threshold = self.spec.num("threshold");
+        self.slope = 1.0 - 1.0 / ratio;
+        self.attack = coef(self.spec.num("attack"), self.sr);
+        self.release = coef(self.spec.num("release"), self.sr);
+        self.makeup = match self.spec.get("makeup") {
+            Value::Num(db) => db,
+            _ => -self.threshold * self.slope * 0.25,
+        };
     }
 }
 
@@ -242,33 +140,47 @@ impl Effect for Compressor {
             *x *= 10f32.powf((self.makeup - reduction) / 20.0);
         }
     }
+    live_set!();
 }
 
 // --------------------------------------------------------------- echo/delay
 
 struct DelayFx {
+    spec: Spec,
+    sr: f32,
     line: Vec<f32>,
+    len: usize,
     pos: usize,
     feedback: f32,
     mix: f32,
-    damp: Option<f32>, // one-pole lowpass coefficient in the feedback path (tape-style echo)
+    damp: Option<f32>, // one-pole lowpass in the feedback path (tape-style echo only)
     damp_state: f32,
 }
 
 impl DelayFx {
-    fn new(time_ms: f32, feedback: f32, tone: Option<f32>, mix: f32, sr: f32) -> Self {
-        let len = ((time_ms * 0.001 * sr) as usize).max(1);
-        Self {
-            line: vec![0.0; len],
+    fn new(spec: Spec, sr: f32) -> Self {
+        let mut s = Self {
+            spec,
+            sr,
+            line: vec![0.0; (2.0 * sr) as usize + 2],
+            len: 1,
             pos: 0,
-            feedback,
-            mix,
-            damp: tone.map(|t| {
-                let cutoff = 1000.0 * 12.0_f32.powf(t); // 1 kHz .. 12 kHz
-                1.0 - (-2.0 * std::f32::consts::PI * cutoff / sr).exp()
-            }),
+            feedback: 0.0,
+            mix: 0.0,
+            damp: None,
             damp_state: 0.0,
-        }
+        };
+        s.configure();
+        s
+    }
+
+    fn configure(&mut self) {
+        self.len = ((self.spec.num("time") * 0.001 * self.sr) as usize).clamp(1, self.line.len());
+        self.pos %= self.len;
+        self.feedback = self.spec.num("feedback");
+        self.mix = self.spec.num("mix");
+        self.damp = (self.spec.def.name == "echo")
+            .then(|| one_pole(1000.0 * 12.0_f32.powf(self.spec.num("tone")), self.sr)); // 1 kHz .. 12 kHz
     }
 }
 
@@ -281,240 +193,408 @@ impl Effect for DelayFx {
                 d = self.damp_state;
             }
             self.line[self.pos] = *x + self.feedback * d;
-            self.pos = (self.pos + 1) % self.line.len();
+            self.pos = (self.pos + 1) % self.len;
             *x += self.mix * d;
         }
+    }
+    live_set!();
+}
+
+// -------------------------------------------------- modulated delay (shared)
+
+struct ModDelay {
+    buf: Vec<f32>,
+    wpos: usize,
+}
+
+impl ModDelay {
+    fn new(max_samples: usize) -> Self {
+        Self { buf: vec![0.0; max_samples + 4], wpos: 0 }
+    }
+
+    /// Read `delay` samples back from the write head (fractional, linear interpolation).
+    fn read(&self, delay: f32) -> f32 {
+        let len = self.buf.len();
+        let pos = (self.wpos as f32 - delay - 1.0).rem_euclid(len as f32);
+        let i = (pos as usize) % len;
+        let frac = (pos - i as f32).clamp(0.0, 1.0);
+        let (a, b) = (self.buf[i], self.buf[(i + 1) % len]);
+        a + (b - a) * frac
+    }
+
+    fn push(&mut self, x: f32) {
+        self.buf[self.wpos] = x;
+        self.wpos = (self.wpos + 1) % self.buf.len();
     }
 }
 
 // ------------------------------------------------------------------- chorus
 
 struct Chorus {
-    inner: Box<dyn AudioUnit>,
+    spec: Spec,
+    sr: f32,
+    line: ModDelay,
+    phase: f32,
+    step: f32,
+    depth: f32, // samples
+    base: f32,  // samples
     mix: f32,
 }
 
 impl Chorus {
-    fn new(rate: f32, depth: f32, mix: f32, sr: f32) -> Self {
-        let inner = fs::chorus(0, 0.015, 0.002 + depth * 0.008, rate);
-        Self { inner: unit(Box::new(inner), sr), mix }
+    fn new(spec: Spec, sr: f32) -> Self {
+        let mut s = Self {
+            spec,
+            sr,
+            line: ModDelay::new((0.04 * sr) as usize),
+            phase: 0.0,
+            step: 0.0,
+            depth: 0.0,
+            base: 0.0,
+            mix: 0.0,
+        };
+        s.configure();
+        s
+    }
+
+    fn configure(&mut self) {
+        self.step = self.spec.num("rate") / self.sr;
+        self.depth = (0.0015 + self.spec.num("depth") * 0.0065) * self.sr;
+        self.base = 0.014 * self.sr;
+        self.mix = self.spec.num("mix");
     }
 }
 
 impl Effect for Chorus {
     fn process(&mut self, buf: &mut [f32]) {
         for x in buf {
-            let wet = self.inner.filter_mono(*x) * 2.0; // fundsp's chorus output is ~half level
-            *x += self.mix * (wet - *x);
+            self.phase = (self.phase + self.step).fract();
+            let mut wet = 0.0;
+            for v in 0..3 {
+                let p = (self.phase + v as f32 / 3.0).fract();
+                wet += self.line.read(self.base + self.depth * (TAU * p).sin());
+            }
+            self.line.push(*x);
+            *x = (*x + self.mix * wet / 3.0) / (1.0 + self.mix);
         }
     }
+    live_set!();
+}
+
+// ------------------------------------------------------------------ flanger
+
+struct Flanger {
+    spec: Spec,
+    sr: f32,
+    line: ModDelay,
+    phase: f32,
+    step: f32,
+    lo: f32,
+    hi: f32,
+    feedback: f32,
+    mix: f32,
+}
+
+impl Flanger {
+    fn new(spec: Spec, sr: f32) -> Self {
+        let mut s = Self {
+            spec,
+            sr,
+            line: ModDelay::new((0.02 * sr) as usize),
+            phase: 0.0,
+            step: 0.0,
+            lo: 0.0,
+            hi: 0.0,
+            feedback: 0.0,
+            mix: 0.0,
+        };
+        s.configure();
+        s
+    }
+
+    fn configure(&mut self) {
+        self.step = self.spec.num("rate") / self.sr;
+        self.lo = 0.0005 * self.sr;
+        self.hi = (0.001 + self.spec.num("depth") * 0.008) * self.sr;
+        self.feedback = self.spec.num("feedback");
+        self.mix = self.spec.num("mix");
+    }
+}
+
+impl Effect for Flanger {
+    fn process(&mut self, buf: &mut [f32]) {
+        for x in buf {
+            self.phase = (self.phase + self.step).fract();
+            let d = self.lo + (self.hi - self.lo) * (0.5 + 0.5 * (TAU * self.phase).sin());
+            let wet = self.line.read(d);
+            self.line.push(*x + self.feedback * wet);
+            *x = (*x + self.mix * wet) / (1.0 + self.mix);
+        }
+    }
+    live_set!();
+}
+
+// ------------------------------------------------------------------- phaser
+
+struct Phaser {
+    spec: Spec,
+    sr: f32,
+    phase: f32,
+    step: f32,
+    depth: f32,
+    feedback: f32,
+    mix: f32,
+    z: [f32; 4],
+    last: f32,
+}
+
+impl Phaser {
+    fn new(spec: Spec, sr: f32) -> Self {
+        let mut s = Self { spec, sr, phase: 0.0, step: 0.0, depth: 0.0, feedback: 0.0, mix: 0.0, z: [0.0; 4], last: 0.0 };
+        s.configure();
+        s
+    }
+
+    fn configure(&mut self) {
+        self.step = self.spec.num("rate") / self.sr;
+        self.depth = self.spec.num("depth");
+        self.feedback = self.spec.num("feedback");
+        self.mix = self.spec.num("mix");
+    }
+}
+
+impl Effect for Phaser {
+    fn process(&mut self, buf: &mut [f32]) {
+        for x in buf {
+            self.phase = (self.phase + self.step).fract();
+            let sweep = 0.5 + 0.5 * (TAU * self.phase).sin();
+            let fc = (300.0 * 10f32.powf(self.depth * sweep)).min(self.sr * 0.4);
+            let t = (PI * fc / self.sr).tan();
+            let a = (t - 1.0) / (t + 1.0);
+            let mut s = *x + self.feedback * self.last;
+            for z in &mut self.z {
+                let y = a * s + *z;
+                *z = s - a * y;
+                s = y;
+            }
+            self.last = s;
+            *x = (*x + self.mix * s) / (1.0 + self.mix);
+        }
+    }
+    live_set!();
+}
+
+// ------------------------------------------------------------------ tremolo
+
+struct Tremolo {
+    spec: Spec,
+    sr: f32,
+    phase: f32,
+    step: f32,
+    depth: f32,
+}
+
+impl Tremolo {
+    fn new(spec: Spec, sr: f32) -> Self {
+        let mut s = Self { spec, sr, phase: 0.0, step: 0.0, depth: 0.0 };
+        s.configure();
+        s
+    }
+
+    fn configure(&mut self) {
+        self.step = self.spec.num("rate") / self.sr;
+        self.depth = self.spec.num("depth");
+    }
+}
+
+impl Effect for Tremolo {
+    fn process(&mut self, buf: &mut [f32]) {
+        for x in buf {
+            self.phase = (self.phase + self.step).fract();
+            let lfo = 0.5 + 0.5 * (TAU * self.phase).sin();
+            *x *= 1.0 - self.depth * lfo;
+        }
+    }
+    live_set!();
+}
+
+// ---------------------------------------------------------------------- wah
+
+/// Auto-wah: a resonant band-pass swept by your picking (`rate=0`) or by an LFO.
+struct Wah {
+    spec: Spec,
+    sr: f32,
+    sens: f32,
+    lfo_step: f32,
+    lfo_phase: f32,
+    damp: f32,
+    gain: f32,
+    min: f32,
+    max: f32,
+    mix: f32,
+    env: f32,
+    att: f32,
+    rel: f32,
+    low: f32,
+    band: f32,
+}
+
+impl Wah {
+    fn new(spec: Spec, sr: f32) -> Self {
+        let mut s = Self {
+            spec,
+            sr,
+            sens: 0.0,
+            lfo_step: 0.0,
+            lfo_phase: 0.0,
+            damp: 0.0,
+            gain: 0.0,
+            min: 0.0,
+            max: 0.0,
+            mix: 0.0,
+            env: 0.0,
+            att: coef(4.0, sr),
+            rel: coef(90.0, sr),
+            low: 0.0,
+            band: 0.0,
+        };
+        s.configure();
+        s
+    }
+
+    fn configure(&mut self) {
+        let q = self.spec.num("q");
+        self.sens = self.spec.num("sensitivity");
+        self.lfo_step = self.spec.num("rate") / self.sr;
+        self.damp = 1.0 / q;
+        self.gain = q.sqrt() * 2.0;
+        self.min = self.spec.num("min");
+        self.max = self.spec.num("max").max(self.min * 1.2);
+        self.mix = self.spec.num("mix");
+    }
+}
+
+impl Effect for Wah {
+    fn process(&mut self, buf: &mut [f32]) {
+        for x in buf {
+            let pos = if self.lfo_step > 0.0 {
+                self.lfo_phase = (self.lfo_phase + self.lfo_step).fract();
+                0.5 + 0.5 * (TAU * self.lfo_phase).sin()
+            } else {
+                let l = x.abs();
+                let c = if l > self.env { self.att } else { self.rel };
+                self.env = l + c * (self.env - l);
+                (self.env * (3.0 + 40.0 * self.sens)).clamp(0.0, 1.0)
+            };
+            let fc = (self.min * (self.max / self.min).powf(pos)).min(self.sr / 6.0);
+            let f = 2.0 * (PI * fc / self.sr).sin();
+            self.low += f * self.band;
+            let high = *x - self.low - self.damp * self.band;
+            self.band += f * high;
+            let wet = self.band * self.damp * self.gain;
+            *x = *x * (1.0 - self.mix) + wet * self.mix;
+        }
+    }
+    live_set!();
 }
 
 // ---------------------------------------------------------------- harmonics
 
+#[derive(Default)]
+struct HighPass {
+    a: f32,
+    x1: f32,
+    y1: f32,
+}
+
+impl HighPass {
+    fn set(&mut self, cutoff: f32, sr: f32) {
+        self.a = 1.0 / (1.0 + TAU * cutoff / sr);
+    }
+
+    fn tick(&mut self, x: f32) -> f32 {
+        let y = self.a * (self.y1 + x - self.x1);
+        self.x1 = x;
+        self.y1 = y;
+        y
+    }
+}
+
 /// Exciter: distorts the high band and adds it back for extra harmonics.
 struct Harmonics {
-    pre: Box<dyn AudioUnit>,
-    shaper: Box<dyn AudioUnit>,
-    post: Box<dyn AudioUnit>,
+    spec: Spec,
+    sr: f32,
+    pre: [HighPass; 2],
+    post: [HighPass; 2],
+    gain: f32,
     mix: f32,
 }
 
 impl Harmonics {
-    fn new(drive: f32, freq: f32, mix: f32, sr: f32) -> Self {
-        Self {
-            pre: unit(Box::new(fs::highpass_hz(freq, 0.7)), sr),
-            shaper: unit(Box::new(fs::shape(fs::Tanh(1.0 + drive * 9.0))), sr),
-            post: unit(Box::new(fs::highpass_hz(freq, 0.7)), sr),
-            mix,
+    fn new(spec: Spec, sr: f32) -> Self {
+        let mut s = Self { spec, sr, pre: Default::default(), post: Default::default(), gain: 1.0, mix: 0.0 };
+        s.configure();
+        s
+    }
+
+    fn configure(&mut self) {
+        let freq = self.spec.num("freq");
+        for f in self.pre.iter_mut().chain(self.post.iter_mut()) {
+            f.set(freq, self.sr);
         }
+        self.gain = 1.0 + self.spec.num("drive") * 9.0;
+        self.mix = self.spec.num("mix");
     }
 }
 
 impl Effect for Harmonics {
     fn process(&mut self, buf: &mut [f32]) {
         for x in buf {
-            let h = self.pre.filter_mono(*x);
-            let h = self.shaper.filter_mono(h);
-            let h = self.post.filter_mono(h);
+            let mut h = *x;
+            for f in &mut self.pre {
+                h = f.tick(h);
+            }
+            h = (h * self.gain).tanh();
+            for f in &mut self.post {
+                h = f.tick(h);
+            }
             *x += self.mix * h;
         }
     }
+    live_set!();
 }
 
-// --------------------------------------------------------------- tone-shift
+// ------------------------------------------------------------------- reverb
 
-/// A pitch shifter backend. `high` is the phase-vocoder-style Signalsmith Stretch
-/// (cleanest, ~50+ ms latency). `fast` is a pitch-synchronous delay-line shifter: the
-/// detected note period locks its two taps in phase, so latency is only about one or
-/// two periods (about 10 ms) and the pitch is exact for a single sustained note.
-/// It tracks one note at a time, so chords and noise degrade it.
-enum Shifter {
-    High(Stretch, Vec<f32>),
-    Fast(Granular, PitchTracker),
-}
-
-fn shifter(mode: &str, window_ms: f32, sr: f32) -> Result<Shifter, String> {
-    match mode {
-        "high" => Ok(Shifter::High(Stretch::preset_default(1, sr as u32), Vec::new())),
-        "fast" => Ok(Shifter::Fast(Granular::new(window_ms, sr), PitchTracker::new(sr))),
-        other => Err(format!("mode='{other}' is not valid (use high or fast)")),
-    }
-}
-
-impl Shifter {
-    fn process(&mut self, buf: &mut [f32], semitones: f32) {
-        match self {
-            Shifter::High(stretch, scratch) => {
-                stretch.set_transpose_factor_semitones(semitones, None);
-                scratch.clear();
-                scratch.extend_from_slice(buf);
-                stretch.process(&*scratch, buf);
-            }
-            Shifter::Fast(g, tracker) => {
-                if tracker.push(buf) {
-                    if let Some(f0) = tracker.detect() {
-                        g.set_period(tracker.sr / f0);
-                    }
-                }
-                let ratio = 2f32.powf(semitones / 12.0);
-                for x in buf {
-                    *x = g.tick(*x, ratio);
-                }
-            }
-        }
-    }
-}
-
-/// Two taps `delta` samples apart (a whole number of note periods) sweep through a
-/// delay line with a linear crossfade. Because the taps see the same waveform, the
-/// crossfade is seamless and the output pitch is exactly `ratio` times the input.
-struct Granular {
-    buf: Vec<f32>,
-    wpos: usize,
-    u: f32,
-    delta: f32,
-    target: f32,
-    max_delta: f32,
-}
-
-impl Granular {
-    fn new(window_ms: f32, sr: f32) -> Self {
-        let max_delta = 0.06 * sr;
-        let target = (window_ms * 0.001 * sr).clamp(16.0, max_delta);
-        Self { buf: vec![0.0; max_delta as usize * 2 + 8], wpos: 0, u: 0.0, delta: target, target, max_delta }
-    }
-
-    /// Lock the tap spacing to a whole number of note periods near the target window.
-    fn set_period(&mut self, period: f32) {
-        let k = (self.target / period).round().max(1.0);
-        let d = (k * period).clamp(16.0, self.max_delta);
-        if (d - self.delta).abs() / self.delta > 0.01 {
-            self.u *= d / self.delta;
-            self.delta = d;
-        }
-    }
-
-    fn read(&self, delay: f32) -> f32 {
-        let len = self.buf.len();
-        let pos = (self.wpos as f32 - delay - 1.0).rem_euclid(len as f32);
-        let i = (pos as usize) % len; // rem_euclid can round up to exactly len
-        let frac = (pos - i as f32).clamp(0.0, 1.0);
-        let (a, b) = (self.buf[i], self.buf[(i + 1) % len]);
-        a + (b - a) * frac
-    }
-
-    fn tick(&mut self, x: f32, ratio: f32) -> f32 {
-        self.buf[self.wpos] = x;
-        self.u = (self.u + (1.0 - ratio)).rem_euclid(self.delta);
-        let s = self.u / self.delta;
-        let y = (1.0 - s) * self.read(self.u) + s * self.read(self.u + self.delta);
-        self.wpos = (self.wpos + 1) % self.buf.len();
-        y
-    }
-}
-
-struct ToneShift {
-    shifter: Shifter,
-    semitones: f32,
-    mix: f32,
-    scratch: Vec<f32>,
-}
-
-impl ToneShift {
-    fn new(semitones: f32, mix: f32, shifter: Shifter) -> Self {
-        Self { shifter, semitones, mix, scratch: Vec::new() }
-    }
-}
-
-impl Effect for ToneShift {
-    fn process(&mut self, buf: &mut [f32]) {
-        self.scratch.clear();
-        self.scratch.extend_from_slice(buf);
-        self.shifter.process(buf, self.semitones);
-        for (x, dry) in buf.iter_mut().zip(&self.scratch) {
-            *x = dry * (1.0 - self.mix) + *x * self.mix;
-        }
-    }
-}
-
-// ------------------------------------------------------------------ vocoder
-
-/// Channel vocoder. The input is the modulator; the carrier is a built-in
-/// saw stack (root, fifth, octave).
-struct Vocoder {
-    mod_filters: Vec<Box<dyn AudioUnit>>,
-    car_filters: Vec<Box<dyn AudioUnit>>,
-    envs: Vec<f32>,
-    release: f32,
-    phases: [f32; 3],
-    steps: [f32; 3],
+struct Reverb {
+    spec: Spec,
+    inner: Box<dyn AudioUnit>,
     mix: f32,
 }
 
-impl Vocoder {
-    fn new(bands: usize, carrier: f32, release_ms: f32, mix: f32, sr: f32) -> Self {
-        let (lo, hi) = (120.0_f32, 7000.0_f32);
-        let centers: Vec<f32> = (0..bands)
-            .map(|i| lo * (hi / lo).powf(i as f32 / (bands - 1) as f32))
-            .collect();
-        let q = 4.0 + bands as f32 / 4.0;
-        let mk = |f: f32| unit(Box::new(fs::bandpass_hz(f, q)), sr);
-        Self {
-            mod_filters: centers.iter().map(|f| mk(*f)).collect(),
-            car_filters: centers.iter().map(|f| mk(*f)).collect(),
-            envs: vec![0.0; bands],
-            release: coef(release_ms, sr),
-            phases: [0.0; 3],
-            steps: [carrier / sr, carrier * 1.5 / sr, carrier * 2.0 / sr],
-            mix,
-        }
+impl Reverb {
+    fn new(spec: Spec, sr: f32) -> Self {
+        let inner = fs::reverb_stereo(spec.num("size"), spec.num("time"), spec.num("damping"));
+        let mix = spec.num("mix");
+        Self { spec, inner: unit(Box::new(inner), sr), mix }
+    }
+
+    fn configure(&mut self) {
+        self.mix = self.spec.num("mix");
     }
 }
 
-impl Effect for Vocoder {
+impl Effect for Reverb {
     fn process(&mut self, buf: &mut [f32]) {
         for x in buf {
-            let mut carrier = 0.0;
-            for (p, s) in self.phases.iter_mut().zip(self.steps) {
-                *p = (*p + s).fract();
-                carrier += 2.0 * *p - 1.0;
-            }
-            carrier *= 0.33;
-            let mut sum = 0.0;
-            for i in 0..self.envs.len() {
-                let m = self.mod_filters[i].filter_mono(*x).abs();
-                let e = &mut self.envs[i];
-                *e = if m > *e { m } else { m + self.release * (*e - m) };
-                sum += self.car_filters[i].filter_mono(carrier) * *e;
-            }
-            let wet = (sum * 0.4).tanh();
-            *x = *x * (1.0 - self.mix) + wet * self.mix;
+            let (l, r) = self.inner.filter_stereo(*x, *x);
+            *x += self.mix * 0.5 * (l + r);
         }
     }
+    live_set!();
 }
 
-// ----------------------------------------------------------------- autotune
+// ------------------------------------------------------------- pitch tracker
 
 const WINDOW: usize = 1536;
 const HOP: usize = 256;
@@ -591,66 +671,238 @@ impl PitchTracker {
     }
 }
 
-struct Autotune {
+// ------------------------------------------------------------ pitch shifter
+
+/// A pitch shifter backend. `high` is the phase-vocoder-style Signalsmith Stretch
+/// (cleanest, ~50+ ms latency). `fast` is a pitch-synchronous delay-line shifter: the
+/// detected note period locks its two taps in phase, so latency is only about one or
+/// two periods (about 10 ms) and the pitch is exact for a single sustained note.
+/// It tracks one note at a time, so chords and noise degrade it.
+enum Shifter {
+    High(Stretch, Vec<f32>),
+    Fast(Granular, PitchTracker),
+}
+
+impl Shifter {
+    fn new(spec: &Spec, sr: f32) -> Self {
+        match spec.option("mode") {
+            "fast" => Shifter::Fast(Granular::new(spec.num("window"), sr), PitchTracker::new(sr)),
+            _ => Shifter::High(Stretch::preset_default(1, sr as u32), Vec::new()),
+        }
+    }
+
+    fn process(&mut self, buf: &mut [f32], semitones: f32) {
+        match self {
+            Shifter::High(stretch, scratch) => {
+                stretch.set_transpose_factor_semitones(semitones, None);
+                scratch.clear();
+                scratch.extend_from_slice(buf);
+                stretch.process(&*scratch, buf);
+            }
+            Shifter::Fast(g, tracker) => {
+                if tracker.push(buf) {
+                    if let Some(f0) = tracker.detect() {
+                        g.set_period(tracker.sr / f0);
+                    }
+                }
+                let ratio = 2f32.powf(semitones / 12.0);
+                for x in buf {
+                    *x = g.tick(*x, ratio);
+                }
+            }
+        }
+    }
+}
+
+/// Two taps `delta` samples apart (a whole number of note periods) sweep through a
+/// delay line with a linear crossfade. Because the taps see the same waveform, the
+/// crossfade is seamless and the output pitch is exactly `ratio` times the input.
+struct Granular {
+    line: ModDelay,
+    u: f32,
+    delta: f32,
+    target: f32,
+    max_delta: f32,
+}
+
+impl Granular {
+    fn new(window_ms: f32, sr: f32) -> Self {
+        let max_delta = 0.06 * sr;
+        let target = (window_ms * 0.001 * sr).clamp(16.0, max_delta);
+        Self { line: ModDelay::new(max_delta as usize * 2 + 4), u: 0.0, delta: target, target, max_delta }
+    }
+
+    /// Lock the tap spacing to a whole number of note periods near the target window.
+    fn set_period(&mut self, period: f32) {
+        let k = (self.target / period).round().max(1.0);
+        let d = (k * period).clamp(16.0, self.max_delta);
+        if (d - self.delta).abs() / self.delta > 0.01 {
+            self.u *= d / self.delta;
+            self.delta = d;
+        }
+    }
+
+    fn tick(&mut self, x: f32, ratio: f32) -> f32 {
+        self.line.push(x);
+        self.u = (self.u + (1.0 - ratio)).rem_euclid(self.delta);
+        let s = self.u / self.delta;
+        // `push` already advanced the write head, so a delay of 0 reads the newest sample.
+        (1.0 - s) * self.line.read(self.u) + s * self.line.read(self.u + self.delta)
+    }
+}
+
+struct ToneShift {
+    spec: Spec,
     shifter: Shifter,
-    allowed: [bool; 12], // pitch classes (absolute), already rotated by key
+    semitones: f32,
+    mix: f32,
+    scratch: Vec<f32>,
+}
+
+impl ToneShift {
+    fn new(spec: Spec, sr: f32) -> Self {
+        let shifter = Shifter::new(&spec, sr);
+        let mut s = Self { spec, shifter, semitones: 0.0, mix: 1.0, scratch: Vec::new() };
+        s.configure();
+        s
+    }
+
+    fn configure(&mut self) {
+        self.semitones = self.spec.num("semitones") + self.spec.num("cents") / 100.0;
+        self.mix = self.spec.num("mix");
+    }
+}
+
+impl Effect for ToneShift {
+    fn process(&mut self, buf: &mut [f32]) {
+        self.scratch.clear();
+        self.scratch.extend_from_slice(buf);
+        self.shifter.process(buf, self.semitones);
+        for (x, dry) in buf.iter_mut().zip(&self.scratch) {
+            *x = dry * (1.0 - self.mix) + *x * self.mix;
+        }
+    }
+    live_set!();
+}
+
+// ------------------------------------------------------------------ vocoder
+
+/// Channel vocoder. The input is the modulator; the carrier is a built-in
+/// saw stack (root, fifth, octave).
+struct Vocoder {
+    spec: Spec,
+    sr: f32,
+    mod_filters: Vec<Box<dyn AudioUnit>>,
+    car_filters: Vec<Box<dyn AudioUnit>>,
+    envs: Vec<f32>,
+    release: f32,
+    phases: [f32; 3],
+    steps: [f32; 3],
+    mix: f32,
+}
+
+impl Vocoder {
+    fn new(spec: Spec, sr: f32) -> Self {
+        let bands = spec.num("bands") as usize;
+        let carrier = spec.num("carrier");
+        let (lo, hi) = (120.0_f32, 7000.0_f32);
+        let centers: Vec<f32> = (0..bands).map(|i| lo * (hi / lo).powf(i as f32 / (bands - 1) as f32)).collect();
+        let q = 4.0 + bands as f32 / 4.0;
+        let mk = |f: f32| unit(Box::new(fs::bandpass_hz(f, q)), sr);
+        let mut s = Self {
+            spec,
+            sr,
+            mod_filters: centers.iter().map(|f| mk(*f)).collect(),
+            car_filters: centers.iter().map(|f| mk(*f)).collect(),
+            envs: vec![0.0; bands],
+            release: 0.0,
+            phases: [0.0; 3],
+            steps: [carrier / sr, carrier * 1.5 / sr, carrier * 2.0 / sr],
+            mix: 1.0,
+        };
+        s.configure();
+        s
+    }
+
+    fn configure(&mut self) {
+        self.release = coef(self.spec.num("release"), self.sr);
+        self.mix = self.spec.num("mix");
+    }
+}
+
+impl Effect for Vocoder {
+    fn process(&mut self, buf: &mut [f32]) {
+        for x in buf {
+            let mut carrier = 0.0;
+            for (p, s) in self.phases.iter_mut().zip(self.steps) {
+                *p = (*p + s).fract();
+                carrier += 2.0 * *p - 1.0;
+            }
+            carrier *= 0.33;
+            let mut sum = 0.0;
+            for i in 0..self.envs.len() {
+                let m = self.mod_filters[i].filter_mono(*x).abs();
+                let e = &mut self.envs[i];
+                *e = if m > *e { m } else { m + self.release * (*e - m) };
+                sum += self.car_filters[i].filter_mono(carrier) * *e;
+            }
+            let wet = (sum * 0.4).tanh();
+            *x = *x * (1.0 - self.mix) + wet * self.mix;
+        }
+    }
+    live_set!();
+}
+
+// ----------------------------------------------------------------- autotune
+
+struct Autotune {
+    spec: Spec,
+    shifter: Shifter,
+    tracker: PitchTracker,
+    allowed: [bool; 12], // absolute pitch classes
     speed_ms: f32,
     amount: f32,
     sr: f32,
-    tracker: PitchTracker,
     target: f32,
     current: f32,
 }
 
-fn parse_key(key: &str) -> Result<usize, String> {
-    let k = key.trim().to_lowercase().replace('♯', "#").replace('♭', "b");
-    Ok(match k.as_str() {
-        "c" => 0,
-        "c#" | "db" => 1,
-        "d" => 2,
-        "d#" | "eb" => 3,
-        "e" => 4,
-        "f" => 5,
-        "f#" | "gb" => 6,
-        "g" => 7,
-        "g#" | "ab" => 8,
-        "a" => 9,
-        "a#" | "bb" => 10,
-        "b" => 11,
-        _ => return Err(format!("--autotune: unknown key '{key}' (use C, C#, Db, D ... B)")),
-    })
-}
+/// Scale steps in the order of `params::SCALES`.
+const SCALE_STEPS: [&[usize]; 6] = [
+    &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], // chromatic
+    &[0, 2, 4, 5, 7, 9, 11],                 // major
+    &[0, 2, 3, 5, 7, 8, 10],                 // minor
+    &[0, 2, 4, 7, 9],                        // pentatonic
+    &[0, 3, 5, 7, 10],                       // minor-pentatonic
+    &[0, 3, 5, 6, 7, 10],                    // blues
+];
 
 impl Autotune {
-    fn new(key: &str, scale: &str, speed_ms: f32, amount: f32, sr: f32, shifter: Shifter) -> Result<Self, String> {
-        let root = parse_key(key)?;
-        let steps: &[usize] = match scale.to_lowercase().as_str() {
-            "chromatic" => &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
-            "major" => &[0, 2, 4, 5, 7, 9, 11],
-            "minor" => &[0, 2, 3, 5, 7, 8, 10],
-            "pentatonic" | "major-pentatonic" => &[0, 2, 4, 7, 9],
-            "minor-pentatonic" => &[0, 3, 5, 7, 10],
-            "blues" => &[0, 3, 5, 6, 7, 10],
-            other => {
-                return Err(format!(
-                    "--autotune: unknown scale '{other}' (chromatic, major, minor, pentatonic, minor-pentatonic, blues)"
-                ));
-            }
-        };
-        let mut allowed = [false; 12];
-        for s in steps {
-            allowed[(root + s) % 12] = true;
-        }
-        Ok(Self {
+    fn new(spec: Spec, sr: f32) -> Self {
+        let shifter = Shifter::new(&spec, sr);
+        let mut s = Self {
+            spec,
             shifter,
-            allowed,
-            speed_ms,
-            amount,
-            sr,
             tracker: PitchTracker::new(sr),
+            allowed: [true; 12],
+            speed_ms: 0.0,
+            amount: 1.0,
+            sr,
             target: 0.0,
             current: 0.0,
-        })
+        };
+        s.configure();
+        s
+    }
+
+    fn configure(&mut self) {
+        let root = self.spec.choice("key");
+        self.allowed = [false; 12];
+        for step in SCALE_STEPS[self.spec.choice("scale")] {
+            self.allowed[(root + step) % 12] = true;
+        }
+        self.speed_ms = self.spec.num("speed");
+        self.amount = self.spec.num("amount");
     }
 
     fn update_target(&mut self) {
@@ -662,9 +914,7 @@ impl Autotune {
                 let nearest = (-6..=6)
                     .map(|o| base + o)
                     .filter(|n| self.allowed[n.rem_euclid(12) as usize])
-                    .min_by(|a, b| {
-                        (*a as f32 - midi).abs().partial_cmp(&(*b as f32 - midi).abs()).unwrap()
-                    })
+                    .min_by(|a, b| (*a as f32 - midi).abs().partial_cmp(&(*b as f32 - midi).abs()).unwrap())
                     .unwrap_or(base);
                 ((nearest as f32 - midi) * self.amount).clamp(-7.0, 7.0)
             }
@@ -686,198 +936,18 @@ impl Effect for Autotune {
         self.current += (self.target - self.current) * alpha;
         self.shifter.process(buf, self.current);
     }
-}
-
-// ------------------------------------------------------------ new pedals
-
-fn db(x: f32) -> f32 {
-    10f32.powf(x / 20.0)
-}
-
-struct Tremolo {
-    phase: f32,
-    step: f32,
-    depth: f32,
-}
-
-impl Tremolo {
-    fn new(rate: f32, depth: f32, sr: f32) -> Self {
-        Self { phase: 0.0, step: rate / sr, depth }
-    }
-}
-
-impl Effect for Tremolo {
-    fn process(&mut self, buf: &mut [f32]) {
-        for x in buf {
-            self.phase = (self.phase + self.step).fract();
-            let lfo = 0.5 + 0.5 * (std::f32::consts::TAU * self.phase).sin();
-            *x *= 1.0 - self.depth * lfo;
-        }
-    }
-}
-
-struct Flanger {
-    inner: Box<dyn AudioUnit>,
-    mix: f32,
-}
-
-impl Flanger {
-    fn new(rate: f32, depth: f32, feedback: f32, mix: f32, sr: f32) -> Self {
-        let (lo, hi) = (0.001, 0.002 + depth * 0.008);
-        let f = move |t: f32| lo + (hi - lo) * (0.5 + 0.5 * (std::f32::consts::TAU * rate * t).sin());
-        Self { inner: unit(Box::new(fs::flanger(feedback, lo, hi, f)), sr), mix }
-    }
-}
-
-impl Effect for Flanger {
-    fn process(&mut self, buf: &mut [f32]) {
-        for x in buf {
-            let wet = self.inner.filter_mono(*x) * 0.5; // fundsp's flanger sums dry + delayed
-            *x += self.mix * (wet - *x);
-        }
-    }
-}
-
-struct Phaser {
-    inner: Box<dyn AudioUnit>,
-    mix: f32,
-}
-
-impl Phaser {
-    fn new(rate: f32, depth: f32, feedback: f32, mix: f32, sr: f32) -> Self {
-        let f = move |t: f32| 0.5 + depth * 0.5 * (std::f32::consts::TAU * rate * t).sin();
-        Self { inner: unit(Box::new(fs::phaser(feedback, f)), sr), mix }
-    }
-}
-
-impl Effect for Phaser {
-    fn process(&mut self, buf: &mut [f32]) {
-        for x in buf {
-            let wet = self.inner.filter_mono(*x);
-            *x += self.mix * (wet - *x);
-        }
-    }
-}
-
-/// Auto-wah: a resonant band-pass swept by your picking (`rate=0`) or by an LFO.
-struct Wah {
-    sens: f32,
-    lfo_step: f32,
-    lfo_phase: f32,
-    damp: f32,
-    gain: f32,
-    min: f32,
-    max: f32,
-    mix: f32,
-    sr: f32,
-    env: f32,
-    att: f32,
-    rel: f32,
-    low: f32,
-    band: f32,
-}
-
-impl Wah {
-    fn new(sens: f32, rate: f32, q: f32, min: f32, max: f32, mix: f32, sr: f32) -> Self {
-        Self {
-            sens,
-            lfo_step: rate / sr,
-            lfo_phase: 0.0,
-            damp: 1.0 / q,
-            gain: q.sqrt() * 2.0,
-            min,
-            max: max.max(min * 1.2),
-            mix,
-            sr,
-            env: 0.0,
-            att: coef(4.0, sr),
-            rel: coef(90.0, sr),
-            low: 0.0,
-            band: 0.0,
-        }
-    }
-}
-
-impl Effect for Wah {
-    fn process(&mut self, buf: &mut [f32]) {
-        for x in buf {
-            let pos = if self.lfo_step > 0.0 {
-                self.lfo_phase = (self.lfo_phase + self.lfo_step).fract();
-                0.5 + 0.5 * (std::f32::consts::TAU * self.lfo_phase).sin()
-            } else {
-                let l = x.abs();
-                let c = if l > self.env { self.att } else { self.rel };
-                self.env = l + c * (self.env - l);
-                (self.env * (3.0 + 40.0 * self.sens)).clamp(0.0, 1.0)
-            };
-            let fc = (self.min * (self.max / self.min).powf(pos)).min(self.sr / 6.0);
-            let f = 2.0 * (std::f32::consts::PI * fc / self.sr).sin();
-            self.low += f * self.band;
-            let high = *x - self.low - self.damp * self.band;
-            self.band += f * high;
-            let wet = self.band * self.damp * self.gain;
-            *x = *x * (1.0 - self.mix) + wet * self.mix;
-        }
-    }
-}
-
-struct Reverb {
-    inner: Box<dyn AudioUnit>,
-    mix: f32,
-}
-
-impl Reverb {
-    fn new(mix: f32, time: f32, size: f32, damping: f32, sr: f32) -> Self {
-        Self { inner: unit(Box::new(fs::reverb_stereo(size, time, damping)), sr), mix }
-    }
-}
-
-impl Effect for Reverb {
-    fn process(&mut self, buf: &mut [f32]) {
-        for x in buf {
-            let (l, r) = self.inner.filter_stereo(*x, *x);
-            *x += self.mix * 0.5 * (l + r);
-        }
-    }
-}
-
-// ------------------------------------------------------------------- chain
-
-pub struct Chain {
-    fx: Vec<Box<dyn Effect>>,
-    in_gain: f32,
-    out_gain: f32,
-}
-
-impl Chain {
-    pub fn new(specs: &[Spec], sr: f32, input_db: f32, output_db: f32) -> Result<Self, String> {
-        let fx = specs.iter().map(|s| build(s, sr)).collect::<Result<Vec<_>, _>>()?;
-        Ok(Chain { fx, in_gain: db(input_db), out_gain: db(output_db) })
-    }
-
-    pub fn process(&mut self, buf: &mut [f32]) {
-        if self.in_gain != 1.0 {
-            buf.iter_mut().for_each(|x| *x *= self.in_gain);
-        }
-        for fx in &mut self.fx {
-            fx.process(buf);
-        }
-        if self.out_gain != 1.0 {
-            buf.iter_mut().for_each(|x| *x *= self.out_gain);
-        }
-    }
+    live_set!();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chain::Chain;
 
     const SR: f32 = 48000.0;
 
     fn sine(freq: f32, secs: f32) -> Vec<f32> {
-        (0..(SR * secs) as usize)
-            .map(|n| 0.5 * (std::f32::consts::TAU * freq * n as f32 / SR).sin())
-            .collect()
+        (0..(SR * secs) as usize).map(|n| 0.5 * (TAU * freq * n as f32 / SR).sin()).collect()
     }
 
     /// Frequency from upward zero crossings over the second half of the buffer.
@@ -887,9 +957,9 @@ mod tests {
         crossings as f32 / (tail.len() as f32 / SR)
     }
 
-    fn run(spec: &str, value: &str, input: &[f32]) -> Vec<f32> {
-        let spec = parse_spec(spec, value).unwrap();
-        let mut chain = Chain::new(&[spec], SR, 0.0, 0.0).unwrap();
+    fn run_chain(items: &[(&str, &str)], input: &[f32]) -> Vec<f32> {
+        let specs: Vec<Spec> = items.iter().map(|(n, v)| parse_spec(n, v).unwrap()).collect();
+        let mut chain = Chain::new(&specs, SR, 0.0, 0.0);
         let mut out = input.to_vec();
         for block in out.chunks_mut(256) {
             chain.process(block);
@@ -900,7 +970,7 @@ mod tests {
     #[test]
     fn fast_shifter_hits_target_pitch() {
         for semis in [-12.0f32, -7.0, -2.0, 2.0, 7.0, 12.0] {
-            let out = run("tone-shift", &format!("semitones={semis},mode=fast"), &sine(220.0, 1.5));
+            let out = run_chain(&[("tone-shift", &format!("semitones={semis},mode=fast"))], &sine(220.0, 1.5));
             let want = 220.0 * 2f32.powf(semis / 12.0);
             let got = measure(&out);
             assert!((got / want - 1.0).abs() < 0.03, "{semis:+} st: wanted {want:.1} Hz, got {got:.1} Hz");
@@ -909,7 +979,7 @@ mod tests {
 
     #[test]
     fn high_quality_shifter_hits_target_pitch() {
-        let out = run("tone-shift", "semitones=7", &sine(220.0, 2.0));
+        let out = run_chain(&[("tone-shift", "semitones=7")], &sine(220.0, 2.0));
         let want = 220.0 * 2f32.powf(7.0 / 12.0);
         let got = measure(&out);
         assert!((got / want - 1.0).abs() < 0.02, "wanted {want:.1} Hz, got {got:.1} Hz");
@@ -918,16 +988,52 @@ mod tests {
     #[test]
     fn autotune_snaps_to_nearest_note() {
         let sharp = 220.0 * 2f32.powf(0.35 / 12.0); // A3 + 35 cents
-        let out = run("autotune", "speed=0", &sine(sharp, 2.0));
-        let got = measure(&out);
-        assert!((got / 220.0 - 1.0).abs() < 0.01, "wanted ~220 Hz, got {got:.1} Hz");
+        for mode in ["high", "fast"] {
+            let out = run_chain(&[("autotune", &format!("speed=0,mode={mode}"))], &sine(sharp, 2.0));
+            let got = measure(&out);
+            assert!((got / 220.0 - 1.0).abs() < 0.01, "{mode}: wanted ~220 Hz, got {got:.1} Hz");
+        }
+    }
+
+    #[test]
+    fn detects_guitar_range() {
+        for f in [82.41f32, 110.0, 196.0, 329.63, 659.26] {
+            let x: Vec<f32> = (0..WINDOW).map(|n| 0.4 * (TAU * f * n as f32 / SR).sin()).collect();
+            let mut t = PitchTracker::new(SR);
+            t.push(&x);
+            let got = t.detect().unwrap_or(0.0);
+            assert!((got / f - 1.0).abs() < 0.01, "wanted {f} Hz, got {got:.2} Hz");
+        }
     }
 
     #[test]
     fn every_effect_is_finite_and_bounded() {
-        for name in EFFECT_NAMES {
-            let out = run(name, "", &sine(196.0, 1.0));
-            assert!(out.iter().all(|v| v.is_finite() && v.abs() < 4.0), "{name} produced bad samples");
+        for def in crate::params::EFFECTS {
+            let out = run_chain(&[(def.name, "")], &sine(196.0, 1.0));
+            assert!(out.iter().all(|v| v.is_finite() && v.abs() < 4.0), "{} produced bad samples", def.name);
+        }
+    }
+
+    #[test]
+    fn live_parameter_changes_stay_finite() {
+        // Sweep every live parameter of every effect across its range while audio runs.
+        use crate::params::Kind;
+        for def in crate::params::EFFECTS {
+            let mut fx = build(&Spec::new(def), SR);
+            let mut block = sine(196.0, 0.01);
+            for step in 0..40 {
+                for p in def.params.iter().filter(|p| p.live) {
+                    let t = (step % 8) as f32 / 7.0;
+                    let v = match p.kind {
+                        Kind::Num { min, max, .. } | Kind::AutoNum { min, max, .. } => Value::Num(min + (max - min) * t),
+                        Kind::Choice { options, .. } => Value::Choice(step % options.len()),
+                    };
+                    fx.set(p.key, v);
+                }
+                block.copy_from_slice(&sine(196.0, 0.01));
+                fx.process(&mut block);
+                assert!(block.iter().all(|v| v.is_finite() && v.abs() < 20.0), "{} went bad at step {step}", def.name);
+            }
         }
     }
 
@@ -947,63 +1053,21 @@ mod tests {
         assert!(once.iter().zip(&twice).any(|(x, y)| (x - y).abs() > 0.01));
     }
 
-    fn run_chain(items: &[(&str, &str)], input: &[f32]) -> Vec<f32> {
-        let specs: Vec<Spec> = items.iter().map(|(n, v)| parse_spec(n, v).unwrap()).collect();
-        let mut chain = Chain::new(&specs, SR, 0.0, 0.0).unwrap();
-        let mut out = input.to_vec();
-        for block in out.chunks_mut(256) {
-            chain.process(block);
-        }
-        out
-    }
-
     #[test]
     fn bad_parameters_are_rejected() {
         assert!(parse_spec("overdrive", "tune=1").is_err());
-        assert!(build(&parse_spec("compressor", "ratio=99").unwrap(), SR).is_err());
-        assert!(build(&parse_spec("autotune", "key=H").unwrap(), SR).is_err());
-        assert!(build(&parse_spec("tone-shift", "mode=slow").unwrap(), SR).is_err());
+        assert!(parse_spec("compressor", "ratio=99").is_err());
+        assert!(parse_spec("autotune", "key=H").is_err());
+        assert!(parse_spec("tone-shift", "mode=slow").is_err());
+        assert!(parse_spec("compressor", "makeup=auto").is_ok());
+        assert!(parse_spec("autotune", "key=Db,scale=minor").is_ok());
     }
-}
-
-#[cfg(test)]
-mod fast_autotune_test {
-    use super::*;
 
     #[test]
-    fn fast_autotune_snaps_to_nearest_note() {
-        let sr = 48000.0f32;
-        let sharp = 220.0 * 2f32.powf(0.35 / 12.0);
-        let input: Vec<f32> =
-            (0..96000).map(|n| 0.5 * (std::f32::consts::TAU * sharp * n as f32 / sr).sin()).collect();
-        let spec = parse_spec("autotune", "speed=0,mode=fast").unwrap();
-        let mut chain = Chain::new(&[spec], sr, 0.0, 0.0).unwrap();
-        let mut out = input.clone();
-        for b in out.chunks_mut(256) {
-            chain.process(b);
-        }
-        let tail = &out[48000..];
-        let crossings = tail.windows(2).filter(|w| w[0] <= 0.0 && w[1] > 0.0).count();
-        let f = crossings as f32 / (tail.len() as f32 / sr);
-        assert!((f / 220.0 - 1.0).abs() < 0.01, "got {f:.1} Hz");
-    }
-}
-
-#[cfg(test)]
-mod pitch_tests {
-    use super::*;
-
-    #[test]
-    fn detects_guitar_range() {
-        let sr = 48000.0f32;
-        for f in [82.41f32, 110.0, 196.0, 329.63, 659.26] {
-            let x: Vec<f32> = (0..WINDOW)
-                .map(|n| 0.4 * (std::f32::consts::TAU * f * n as f32 / sr).sin())
-                .collect();
-            let mut t = PitchTracker::new(sr);
-            t.push(&x);
-            let got = t.detect().unwrap_or(0.0);
-            assert!((got / f - 1.0).abs() < 0.01, "wanted {f} Hz, got {got:.2} Hz");
-        }
+    fn spec_round_trips_through_raw() {
+        let s = parse_spec("autotune", "key=F#,scale=blues,speed=0,mode=fast").unwrap();
+        let again = parse_spec("autotune", &s.raw()).unwrap();
+        assert_eq!(s.values, again.values);
+        assert_eq!(parse_spec("overdrive", "").unwrap().raw(), "");
     }
 }
