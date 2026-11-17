@@ -9,22 +9,47 @@ use fxcore::chain::{Cmd, Slot};
 use fxcore::effects::build;
 use fxcore::live::{self, LiveOpts, Running, DEFAULT_BUFFER};
 use fxcore::params::{EffectDef, Kind, Spec, Value, EFFECTS};
-use fxcore::preset::Preset;
-use std::time::Duration;
+use fxcore::preset::{Preset, BUILTIN};
+use std::collections::VecDeque;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 const BUFFERS: [u32; 6] = [32, 64, 128, 256, 512, 1024];
+
+const HISTORY: usize = 72;
+
+/// Where the session and the user's own chains live.
+fn config_dir() -> PathBuf {
+    let home = || std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let base = if cfg!(windows) {
+        std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(home)
+    } else if cfg!(target_os = "macos") {
+        home().join("Library/Application Support")
+    } else {
+        std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".config"))
+    };
+    base.join("fxchain")
+}
 
 struct Fx {
     id: u64,
     spec: Spec,
     bypass: bool,
+    /// Recent output levels of this effect, newest last (0..1 on a dB scale).
+    hist: VecDeque<f32>,
+}
+
+impl Fx {
+    fn new(id: u64, spec: Spec, bypass: bool) -> Self {
+        Fx { id, spec, bypass, hist: VecDeque::new() }
+    }
 }
 
 enum Act {
     Param(usize, usize),
     Bypass(usize),
     Remove(usize),
-    Move(usize, isize),
+    MoveTo(usize, usize),
     Add(&'static EffectDef),
 }
 
@@ -40,11 +65,21 @@ struct App {
     buffer: u32,
     input_db: f32,
     output_db: f32,
-    preset_name: String,
-    presets: Vec<String>,
+    chain_name: String,
+    user_chains: Vec<String>,
     status: String,
     shown_in: f32,
     shown_out: f32,
+    /// Card rectangles from the last frame, used to find the drop position when dragging.
+    card_rects: Vec<egui::Rect>,
+    dragging: Option<usize>,
+    last_hist: Instant,
+    saved_session: String,
+    last_save: Instant,
+}
+
+fn level_frac(peak: f32) -> f32 {
+    ((20.0 * peak.max(1e-6).log10() + 60.0) / 60.0).clamp(0.0, 1.0)
 }
 
 impl App {
@@ -62,26 +97,38 @@ impl App {
             buffer: DEFAULT_BUFFER,
             input_db: 0.0,
             output_db: 0.0,
-            preset_name: "my-preset".into(),
-            presets: Vec::new(),
+            chain_name: "my-chain".into(),
+            user_chains: Vec::new(),
             status: String::new(),
             shown_in: 0.0,
             shown_out: 0.0,
+            card_rects: Vec::new(),
+            dragging: None,
+            last_hist: Instant::now(),
+            saved_session: String::new(),
+            last_save: Instant::now(),
         };
-        app.scan_presets();
-        for name in ["compressor", "overdrive", "reverb"] {
-            app.add_local(fxcore::params::effect_def(name).unwrap());
+        app.scan_chains();
+        if !app.restore_session() {
+            for name in ["compressor", "overdrive", "reverb"] {
+                app.add_local(fxcore::params::effect_def(name).unwrap());
+            }
         }
+        app.saved_session = app.session_text();
         app
     }
 
-    fn scan_presets(&mut self) {
-        self.presets = std::fs::read_dir("presets")
+    fn chains_dir() -> PathBuf {
+        config_dir().join("chains")
+    }
+
+    fn scan_chains(&mut self) {
+        self.user_chains = std::fs::read_dir(Self::chains_dir())
             .map(|d| {
                 let mut v: Vec<String> = d
                     .filter_map(|e| e.ok())
                     .filter_map(|e| e.file_name().into_string().ok())
-                    .filter(|n| n.ends_with(".fx"))
+                    .filter_map(|n| n.strip_suffix(".fx").map(str::to_string))
                     .collect();
                 v.sort();
                 v
@@ -89,12 +136,73 @@ impl App {
             .unwrap_or_default();
     }
 
+    fn preset(&self) -> Preset {
+        Preset {
+            specs: self.chain.iter().map(|f| f.spec.clone()).collect(),
+            bypass: self.chain.iter().map(|f| f.bypass).collect(),
+            input_db: self.input_db,
+            output_db: self.output_db,
+            buffer: Some(self.buffer),
+        }
+    }
+
+    /// Everything that is restored on the next launch, as text.
+    fn session_text(&self) -> String {
+        let name = |sel: Option<usize>, list: &[String]| sel.map(|i| list[i].clone()).unwrap_or_default();
+        format!(
+            "{}\n@in {}\n@out {}\n",
+            self.preset().to_text(),
+            name(self.in_sel, &self.in_devices),
+            name(self.out_sel, &self.out_devices)
+        )
+    }
+
+    fn save_session(&mut self) {
+        let text = self.session_text();
+        if text == self.saved_session {
+            return;
+        }
+        let dir = config_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        let (chain, devices) = text.split_once("\n@in ").unwrap_or((&text, ""));
+        let _ = std::fs::write(dir.join("session.fx"), chain);
+        let _ = std::fs::write(dir.join("devices.txt"), format!("@in {devices}"));
+        self.saved_session = text;
+        self.last_save = Instant::now();
+    }
+
+    fn restore_session(&mut self) -> bool {
+        let dir = config_dir();
+        let Ok(text) = std::fs::read_to_string(dir.join("session.fx")) else { return false };
+        let Ok(p) = Preset::parse(&text) else { return false };
+        if let Some(b) = p.buffer {
+            self.buffer = b;
+        }
+        self.input_db = p.input_db;
+        self.output_db = p.output_db;
+        for (i, spec) in p.specs.into_iter().enumerate() {
+            let id = self.next_id;
+            self.next_id += 1;
+            self.chain.push(Fx::new(id, spec, p.bypass.get(i).copied().unwrap_or(false)));
+        }
+        if let Ok(d) = std::fs::read_to_string(dir.join("devices.txt")) {
+            for line in d.lines() {
+                if let Some(n) = line.strip_prefix("@in ") {
+                    self.in_sel = self.in_devices.iter().position(|d| d == n);
+                } else if let Some(n) = line.strip_prefix("@out ") {
+                    self.out_sel = self.out_devices.iter().position(|d| d == n);
+                }
+            }
+        }
+        true
+    }
+
     fn sample_rate(&self) -> f32 {
         self.running.as_ref().map_or(48000.0, |r| r.control.sample_rate)
     }
 
     fn add_local(&mut self, def: &'static EffectDef) -> usize {
-        self.chain.push(Fx { id: self.next_id, spec: Spec::new(def), bypass: false });
+        self.chain.push(Fx::new(self.next_id, Spec::new(def), false));
         self.next_id += 1;
         self.chain.len() - 1
     }
@@ -159,8 +267,8 @@ impl App {
                 let fx = self.chain.remove(i);
                 self.send(Cmd::Remove { id: fx.id });
             }
-            Act::Move(i, d) => {
-                let to = (i as isize + d).clamp(0, self.chain.len() as isize - 1) as usize;
+            Act::MoveTo(i, to) => {
+                let to = to.min(self.chain.len() - 1);
                 if to != i {
                     let fx = self.chain.remove(i);
                     let id = fx.id;
@@ -178,46 +286,77 @@ impl App {
         }
     }
 
-    fn load_preset(&mut self, name: &str) {
-        match Preset::load(&format!("presets/{name}")) {
+    /// Replace the whole chain with the one described by `text`.
+    fn load_chain(&mut self, text: &str, name: &str) {
+        match Preset::parse(text) {
             Ok(p) => {
                 for fx in std::mem::take(&mut self.chain) {
                     self.send(Cmd::Remove { id: fx.id });
                 }
-                for spec in p.specs {
+                for (i, spec) in p.specs.into_iter().enumerate() {
                     let sr = self.sample_rate();
                     let id = self.next_id;
                     self.next_id += 1;
+                    let off = p.bypass.get(i).copied().unwrap_or(false);
                     let slot = Slot::new(id, &spec, sr);
                     self.send(Cmd::Insert { index: self.chain.len(), slot });
-                    self.chain.push(Fx { id, spec, bypass: false });
+                    if off {
+                        self.send(Cmd::Bypass { id, on: true });
+                    }
+                    self.chain.push(Fx::new(id, spec, off));
                 }
                 self.input_db = p.input_db;
                 self.output_db = p.output_db;
                 self.send(Cmd::Gains { input_db: p.input_db, output_db: p.output_db });
-                self.preset_name = name.trim_end_matches(".fx").to_string();
+                self.chain_name = name.to_string();
                 self.error = None;
+            }
+            Err(e) => self.error = Some(format!("{name}: {e}")),
+        }
+    }
+
+    fn load_user_chain(&mut self, name: &str) {
+        match std::fs::read_to_string(Self::chains_dir().join(format!("{name}.fx"))) {
+            Ok(text) => self.load_chain(&text, name),
+            Err(e) => self.error = Some(format!("{name}: {e}")),
+        }
+    }
+
+    fn save_user_chain(&mut self) {
+        let dir = Self::chains_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        let name: String = self.chain_name.trim().chars().map(|c| if c.is_alphanumeric() || "-_ ".contains(c) { c } else { '-' }).collect();
+        if name.is_empty() {
+            self.error = Some("give the chain a name first".into());
+            return;
+        }
+        let path = dir.join(format!("{name}.fx"));
+        let mut p = self.preset();
+        p.buffer = None;
+        match p.save(&path.to_string_lossy()) {
+            Ok(()) => {
+                self.error = None;
+                self.status = format!("saved {}", path.display());
+                self.scan_chains();
             }
             Err(e) => self.error = Some(e),
         }
     }
 
-    fn save_preset(&mut self) {
-        let _ = std::fs::create_dir_all("presets");
-        let preset = Preset {
-            specs: self.chain.iter().filter(|f| !f.bypass).map(|f| f.spec.clone()).collect(),
-            input_db: self.input_db,
-            output_db: self.output_db,
-            buffer: None,
+    fn record_levels(&mut self) {
+        let Some(r) = &self.running else {
+            self.chain.iter_mut().for_each(|f| f.hist.clear());
+            return;
         };
-        let path = format!("presets/{}.fx", self.preset_name.trim());
-        match preset.save(&path) {
-            Ok(()) => {
-                self.error = None;
-                self.status = format!("saved {path}");
-                self.scan_presets();
+        if self.last_hist.elapsed() < Duration::from_millis(30) {
+            return;
+        }
+        self.last_hist = Instant::now();
+        for (i, fx) in self.chain.iter_mut().enumerate() {
+            fx.hist.push_back(level_frac(r.control.meters.slot_peak(i)));
+            while fx.hist.len() > HISTORY {
+                fx.hist.pop_front();
             }
-            Err(e) => self.error = Some(e),
         }
     }
 }
@@ -235,6 +374,39 @@ fn meter(ui: &mut egui::Ui, label: &str, peak: f32) {
     };
     ui.label(label);
     ui.add(egui::ProgressBar::new(frac).desired_width(140.0).fill(color).text(format!("{db:.0} dB")));
+}
+
+
+/// Output level of one effect over the last couple of seconds.
+fn level_graph(ui: &mut egui::Ui, hist: &VecDeque<f32>, color: egui::Color32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(HISTORY as f32 * 1.5, 24.0), egui::Sense::hover());
+    let p = ui.painter();
+    p.rect_filled(rect, 3.0, egui::Color32::from_black_alpha(90));
+    let n = hist.len();
+    for (k, v) in hist.iter().enumerate() {
+        let x = rect.right() - (n - k) as f32 * 1.5;
+        let top = rect.bottom() - v * (rect.height() - 2.0) - 1.0;
+        let hot = *v > 0.98;
+        let c = if hot { egui::Color32::from_rgb(235, 70, 70) } else { theme::tint(color, 70 + (150.0 * v) as u8) };
+        p.line_segment([egui::pos2(x, rect.bottom() - 1.0), egui::pos2(x, top)], egui::Stroke::new(1.5, c));
+    }
+    if let Some(v) = hist.back() {
+        let y = rect.bottom() - v * (rect.height() - 2.0) - 1.0;
+        p.line_segment([egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)], egui::Stroke::new(1.0, theme::tint(color, 140)));
+    }
+}
+
+/// Grip the user drags to reorder a card.
+fn grip(ui: &mut egui::Ui, color: egui::Color32) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(16.0, 30.0), egui::Sense::drag());
+    let c = if resp.hovered() || resp.dragged() { color } else { theme::tint(color, 130) };
+    for row in 0..3 {
+        for col in 0..2 {
+            let pos = rect.center() + egui::vec2(col as f32 * 6.0 - 3.0, row as f32 * 6.0 - 6.0);
+            ui.painter().circle_filled(pos, 1.7, c);
+        }
+    }
+    resp.on_hover_cursor(egui::CursorIcon::Grab).on_hover_text("Drag to reorder")
 }
 
 /// Draws one parameter; returns true when the user changed it. Right-click resets it.
@@ -317,6 +489,7 @@ impl eframe::App for App {
             self.shown_out = m.out_peak();
             ctx.request_repaint_after(Duration::from_millis(33));
         }
+        self.record_levels();
 
         egui::Panel::top("top").show(root, |ui| {
             ui.add_space(4.0);
@@ -375,42 +548,82 @@ impl eframe::App for App {
             ui.add_space(4.0);
         });
 
-        egui::Panel::left("side").resizable(false).default_size(190.0).show(root, |ui| {
-            ui.heading("Add effect");
-            for def in EFFECTS {
-                let color = theme::accent(def.name);
-                ui.horizontal(|ui| {
-                    theme::effect_icon(ui, def.name, color, 22.0);
-                    let label = egui::RichText::new(def.title).color(color).strong();
-                    let btn = egui::Button::new(label).fill(theme::tint(color, 28)).stroke(egui::Stroke::new(1.0, theme::tint(color, 120)));
-                    if ui.add_sized([138.0, 22.0], btn).clicked() {
-                        acts.push(Act::Add(def));
+        let mut load_builtin: Option<usize> = None;
+        let mut load_user: Option<String> = None;
+        let mut delete_user: Option<String> = None;
+        egui::Panel::right("tools").resizable(false).default_size(270.0).show(root, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                ui.heading("Add effect");
+                egui::Grid::new("add-grid").num_columns(2).spacing([6.0, 4.0]).show(ui, |ui| {
+                    for (k, def) in EFFECTS.iter().enumerate() {
+                        let color = theme::accent(def.name);
+                        ui.horizontal(|ui| {
+                            theme::effect_icon(ui, def.name, color, 22.0);
+                            let btn = egui::Button::new(egui::RichText::new(def.title).color(color))
+                                .fill(theme::tint(color, 28))
+                                .stroke(egui::Stroke::new(1.0, theme::tint(color, 120)));
+                            if ui.add_sized([86.0, 22.0], btn).clicked() {
+                                acts.push(Act::Add(def));
+                            }
+                        });
+                        if k % 2 == 1 {
+                            ui.end_row();
+                        }
                     }
                 });
-            }
-            ui.separator();
-            ui.heading("Presets");
-            let mut to_load = None;
-            for name in &self.presets {
-                if ui.add_sized([170.0, 22.0], egui::Button::new(name.trim_end_matches(".fx"))).clicked() {
-                    to_load = Some(name.clone());
+                ui.add_space(6.0);
+                ui.separator();
+                ui.heading("Built-in chains");
+                for (k, (name, text)) in BUILTIN.iter().enumerate() {
+                    let tip = text.lines().next().unwrap_or("").trim_start_matches('#').trim();
+                    if ui.add_sized([250.0, 22.0], egui::Button::new(*name)).on_hover_text(tip).clicked() {
+                        load_builtin = Some(k);
+                    }
                 }
-            }
-            ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut self.preset_name).desired_width(110.0));
-                if ui.button("Save").clicked() {
-                    self.save_preset();
+                ui.add_space(6.0);
+                ui.separator();
+                ui.heading("My chains");
+                if self.user_chains.is_empty() {
+                    ui.weak("Nothing saved yet.");
                 }
+                for name in &self.user_chains {
+                    ui.horizontal(|ui| {
+                        if ui.add_sized([220.0, 22.0], egui::Button::new(name)).clicked() {
+                            load_user = Some(name.clone());
+                        }
+                        if ui.small_button("✕").on_hover_text("Delete this saved chain").clicked() {
+                            delete_user = Some(name.clone());
+                        }
+                    });
+                }
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.chain_name).desired_width(150.0));
+                    if ui.button("Save chain").clicked() {
+                        self.save_user_chain();
+                    }
+                });
+                ui.weak(format!("Saved in {}", Self::chains_dir().display()));
             });
-            if let Some(name) = to_load {
-                self.load_preset(&name);
-            }
         });
+        if let Some(k) = load_builtin {
+            let (name, text) = BUILTIN[k];
+            self.load_chain(text, name);
+        }
+        if let Some(name) = load_user {
+            self.load_user_chain(&name);
+        }
+        if let Some(name) = delete_user {
+            let _ = std::fs::remove_file(Self::chains_dir().join(format!("{name}.fx")));
+            self.scan_chains();
+        }
 
+        let mut new_rects: Vec<egui::Rect> = Vec::new();
+        let mut drop_at: Option<(usize, usize)> = None;
+        let mut drag_now: Option<usize> = None;
         egui::CentralPanel::default().show(root, |ui| {
             if self.chain.is_empty() {
                 ui.centered_and_justified(|ui| {
-                    ui.label("The chain is empty — add an effect on the left.");
+                    ui.label("The chain is empty — add an effect on the right.");
                 });
                 return;
             }
@@ -421,14 +634,30 @@ impl eframe::App for App {
                     let color = theme::accent(self.chain[i].spec.def.name);
                     let dim = self.chain[i].bypass;
                     let shown = if dim { theme::tint(color, 90) } else { color };
+                    let lifted = self.dragging == Some(i);
                     let card = egui::Frame::new()
-                        .fill(theme::tint(color, if dim { 10 } else { 26 }))
-                        .stroke(egui::Stroke::new(1.0, theme::tint(color, 110)))
+                        .fill(theme::tint(color, if dim { 10 } else if lifted { 50 } else { 26 }))
+                        .stroke(egui::Stroke::new(if lifted { 2.0 } else { 1.0 }, theme::tint(color, 110)))
                         .corner_radius(8.0)
-                        .inner_margin(egui::Margin { left: 16, right: 10, top: 8, bottom: 8 })
+                        .inner_margin(egui::Margin { left: 12, right: 10, top: 8, bottom: 8 })
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
                             ui.horizontal(|ui| {
+                                let g = grip(ui, shown);
+                                if g.dragged() {
+                                    drag_now = Some(i);
+                                }
+                                if g.drag_stopped() {
+                                    if let Some(p) = ctx.pointer_interact_pos() {
+                                        let to = self
+                                            .card_rects
+                                            .iter()
+                                            .enumerate()
+                                            .filter(|(j, r)| *j != i && r.center().y < p.y)
+                                            .count();
+                                        drop_at = Some((i, to));
+                                    }
+                                }
                                 let mut on = !self.chain[i].bypass;
                                 if ui.checkbox(&mut on, "").on_hover_text("Enable / bypass").changed() {
                                     acts.push(Act::Bypass(i));
@@ -439,11 +668,8 @@ impl eframe::App for App {
                                     if ui.small_button("✕").on_hover_text("Remove").clicked() {
                                         acts.push(Act::Remove(i));
                                     }
-                                    if ui.add_enabled(i + 1 < n, egui::Button::new("▼").small()).clicked() {
-                                        acts.push(Act::Move(i, 1));
-                                    }
-                                    if ui.add_enabled(i > 0, egui::Button::new("▲").small()).clicked() {
-                                        acts.push(Act::Move(i, -1));
+                                    if self.running.is_some() {
+                                        level_graph(ui, &self.chain[i].hist, shown);
                                     }
                                 });
                             });
@@ -476,6 +702,7 @@ impl eframe::App for App {
                             });
                         });
                     let r = card.response.rect;
+                    new_rects.push(r);
                     ui.painter().rect_filled(
                         egui::Rect::from_min_max(r.left_top(), egui::pos2(r.left() + 6.0, r.bottom())),
                         egui::CornerRadius { nw: 8, sw: 8, ne: 0, se: 0 },
@@ -483,8 +710,31 @@ impl eframe::App for App {
                     );
                     ui.add_space(4.0);
                 }
+
+                // Insertion marker while a card is being dragged.
+                if let (Some(i), Some(p)) = (self.dragging, ctx.pointer_interact_pos()) {
+                    let others: Vec<&egui::Rect> =
+                        self.card_rects.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, r)| r).collect();
+                    if let Some(first) = others.first() {
+                        let to = others.iter().filter(|r| r.center().y < p.y).count();
+                        let y = if to < others.len() { others[to].top() - 2.0 } else { others[others.len() - 1].bottom() + 2.0 };
+                        let c = theme::accent(self.chain[i].spec.def.name);
+                        ui.painter().line_segment(
+                            [egui::pos2(first.left(), y), egui::pos2(first.right(), y)],
+                            egui::Stroke::new(3.0, c),
+                        );
+                    }
+                }
             });
         });
+        self.card_rects = new_rects;
+        self.dragging = drag_now;
+        if self.dragging.is_some() {
+            ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+        }
+        if let Some((from, to)) = drop_at {
+            acts.push(Act::MoveTo(from, to));
+        }
 
         if gains_changed {
             self.send(Cmd::Gains { input_db: self.input_db, output_db: self.output_db });
@@ -492,6 +742,14 @@ impl eframe::App for App {
         for act in acts {
             self.apply(act);
         }
+
+        if self.last_save.elapsed() > Duration::from_millis(700) {
+            self.save_session();
+        }
+    }
+
+    fn on_exit(&mut self) {
+        self.save_session();
     }
 }
 

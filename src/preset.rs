@@ -6,10 +6,28 @@ use crate::params::Spec;
 #[derive(Default)]
 pub struct Preset {
     pub specs: Vec<Spec>,
+    /// Parallel to `specs`: true for effects saved switched off (`!name` in the file).
+    pub bypass: Vec<bool>,
     pub input_db: f32,
     pub output_db: f32,
     pub buffer: Option<u32>,
 }
+
+/// Chains shipped with the program: (display name, preset text).
+pub const BUILTIN: &[(&str, &str)] = &[
+    ("Guitar clean", include_str!("../presets/builtin/guitar-clean.fx")),
+    ("Guitar crunch", include_str!("../presets/builtin/guitar-crunch.fx")),
+    ("Clean sparkle", include_str!("../presets/builtin/clean-sparkle.fx")),
+    ("Crunch rhythm", include_str!("../presets/builtin/crunch-rhythm.fx")),
+    ("Lead solo", include_str!("../presets/builtin/lead-solo.fx")),
+    ("Ambient wash", include_str!("../presets/builtin/ambient-wash.fx")),
+    ("Funk wah", include_str!("../presets/builtin/funk-wah.fx")),
+    ("Surf tremolo", include_str!("../presets/builtin/surf-tremolo.fx")),
+    ("Jet phase", include_str!("../presets/builtin/jet-phase.fx")),
+    ("Octave thick", include_str!("../presets/builtin/octave-thick.fx")),
+    ("Robot voice", include_str!("../presets/builtin/robot-voice.fx")),
+    ("Autotune pop", include_str!("../presets/builtin/autotune-pop.fx")),
+];
 
 pub fn parse_db(v: &str, what: &str) -> Result<f32, String> {
     let n: f32 = v
@@ -35,12 +53,19 @@ impl Preset {
             }
             let (name, value) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
             let (name, value) = (name.trim_start_matches("--"), value.trim());
+            let (off, name) = match name.strip_prefix('!') {
+                Some(n) => (true, n),
+                None => (false, name),
+            };
             let at = |e: String| format!("line {}: {e}", n + 1);
             match name {
                 "input-gain" => p.input_db = parse_db(value, name).map_err(at)?,
                 "output-gain" => p.output_db = parse_db(value, name).map_err(at)?,
                 "buffer" => p.buffer = Some(value.parse().map_err(|_| at("buffer: not a number".into()))?),
-                _ => p.specs.push(Spec::parse(name, value).map_err(at)?),
+                _ => {
+                    p.specs.push(Spec::parse(name, value).map_err(at)?);
+                    p.bypass.push(off);
+                }
             }
         }
         Ok(p)
@@ -48,11 +73,15 @@ impl Preset {
 
     pub fn to_text(&self) -> String {
         let mut out = String::from("# fxchain preset — effects run top to bottom\n");
+        if let Some(b) = self.buffer {
+            out += &format!("buffer {b}\n");
+        }
         if self.input_db != 0.0 {
             out += &format!("input-gain {}\n", self.input_db);
         }
-        for s in &self.specs {
-            out += &format!("{} {}\n", s.def.name, s.raw()).replace(" \n", "\n");
+        for (i, s) in self.specs.iter().enumerate() {
+            let off = if self.bypass.get(i).copied().unwrap_or(false) { "!" } else { "" };
+            out += &format!("{off}{} {}\n", s.def.name, s.raw()).replace(" \n", "\n");
         }
         if self.output_db != 0.0 {
             out += &format!("output-gain {}\n", self.output_db);
@@ -67,5 +96,30 @@ impl Preset {
 
     pub fn save(&self, path: &str) -> Result<(), String> {
         std::fs::write(path, self.to_text()).map_err(|e| format!("{path}: {e}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builtin_chains_parse_and_build() {
+        for (name, text) in BUILTIN {
+            let p = Preset::parse(text).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(!p.specs.is_empty(), "{name}");
+            for s in &p.specs {
+                crate::effects::build(s, 48000.0);
+            }
+        }
+    }
+
+    #[test]
+    fn bypass_marker_round_trips() {
+        let p = Preset::parse("compressor ratio=3\n!reverb mix=0.2\n").unwrap();
+        assert_eq!(p.bypass, vec![false, true]);
+        let q = Preset::parse(&p.to_text()).unwrap();
+        assert_eq!(q.bypass, vec![false, true]);
+        assert_eq!(q.specs.len(), 2);
     }
 }

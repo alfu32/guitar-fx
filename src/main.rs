@@ -244,6 +244,7 @@ fn run() -> Result<(), String> {
             input_db: cli.live.input_db,
             output_db: cli.live.output_db,
             buffer: None,
+            ..Default::default()
         };
         preset.save(path)?;
         eprintln!("saved preset {path}");

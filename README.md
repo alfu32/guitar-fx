@@ -16,9 +16,12 @@ cargo build --release --no-default-features   # command line only (no GUI depend
 `fxchain-ui` shows the chain as a stack of effect cards. Press **Start**, play, and drag
 sliders: parameter changes reach the audio thread through a command channel and are heard
 within one buffer, without resetting the effect (echo tails and reverb keep ringing).
-Add effects from the left panel, reorder with ▲ ▼, bypass with the checkbox, right-click a
-slider to reset it. Presets in `presets/` load with one click, and **Save** writes the
-current chain. Meters show input and output peaks; the dropout counter tells you when the
+Add effects from the right panel, drag a card by its grip (⠿) to reorder, bypass with the
+checkbox, right-click a slider to reset it. Each card shows a level history of that
+effect's output. The right panel also lists built-in chains (`presets/builtin/`) and your own
+saved chains (`~/.config/fxchain/chains/`, `%APPDATA%\fxchain` on Windows,
+`~/Library/Application Support/fxchain` on macOS). The chain, gains, buffer and devices are
+restored on the next launch. Meters show input and output peaks; the dropout counter tells you when the
 buffer is too small for your machine. Changing device or buffer size needs a Stop/Start.
 
 Parameters marked non-live in the schema (reverb time/size/damping, pitch-shift mode and
@@ -45,7 +48,7 @@ fxchain --overdrive 0.7 --echo --overdrive 0.2
 fxchain -i riff.wav -o riff.fx.wav --chorus --reverb 0.3
 
 # presets
-fxchain --preset presets/guitar-crunch.fx
+fxchain --preset presets/builtin/guitar-crunch.fx
 fxchain --compressor 3 --overdrive 0.6 --save-preset mine.fx
 ```
 

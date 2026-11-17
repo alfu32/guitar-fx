@@ -10,11 +10,25 @@ use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use std::sync::{mpsc, Arc};
 
 /// Levels and dropout counter shared with the UI.
-#[derive(Default)]
+/// How many per-effect level meters exist (chain positions beyond this are not metered).
+pub const SLOT_METERS: usize = 128;
+
 pub struct Meters {
     in_peak: AtomicU32,
     out_peak: AtomicU32,
     xruns: AtomicU32,
+    slots: Vec<AtomicU32>,
+}
+
+impl Default for Meters {
+    fn default() -> Self {
+        Self {
+            in_peak: AtomicU32::default(),
+            out_peak: AtomicU32::default(),
+            xruns: AtomicU32::default(),
+            slots: (0..SLOT_METERS).map(|_| AtomicU32::default()).collect(),
+        }
+    }
 }
 
 impl Meters {
@@ -26,6 +40,11 @@ impl Meters {
     /// Peak level of the output (after output gain), with a short decay.
     pub fn out_peak(&self) -> f32 {
         f32::from_bits(self.out_peak.load(Relaxed))
+    }
+
+    /// Peak level leaving the effect at chain position `i` (held with a short decay).
+    pub fn slot_peak(&self, i: usize) -> f32 {
+        self.slots.get(i).map_or(0.0, |c| f32::from_bits(c.load(Relaxed)))
     }
 
     pub fn xruns(&self) -> u32 {
@@ -170,10 +189,16 @@ impl Chain {
         if self.in_gain != 1.0 {
             buf.iter_mut().for_each(|x| *x *= self.in_gain);
         }
-        for slot in &mut self.slots {
+        for (i, slot) in self.slots.iter_mut().enumerate() {
             if !slot.bypass {
                 slot.fx.process(buf);
             }
+            if let Some(cell) = self.meters.slots.get(i) {
+                hold(cell, peak(buf));
+            }
+        }
+        for cell in self.meters.slots.iter().skip(self.slots.len()) {
+            cell.store(0, Relaxed);
         }
         if self.out_gain != 1.0 {
             buf.iter_mut().for_each(|x| *x *= self.out_gain);
@@ -244,6 +269,7 @@ mod tests {
 
         ctl.send(Cmd::Replace { id: 10, fx: build(&spec("overdrive", "drive=0"), SR) });
         chain.process(&mut tone());
+        assert!(ctl.meters.slot_peak(0) > 0.0 && ctl.meters.slot_peak(5) == 0.0);
         assert!(ctl.meters.out_peak() > 0.0 && ctl.meters.in_peak() > 0.0);
     }
 
