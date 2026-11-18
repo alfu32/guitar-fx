@@ -1,8 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=guitar-fx
-Comment=Multi-effect guitar processor
-Exec=guitar-fx
-Icon=${SNAP}/meta/gui/guitar-fx.png
-Categories=AudioVideo;Audio;
-Terminal=false
