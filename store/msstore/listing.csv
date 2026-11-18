@@ -1,5 +1,27 @@
 ﻿Field,ID,Type (Type),default,en-us
-Description,2,Text,,"guitar-fx is a multi-effect processor for electric guitar. Plug your guitar into an audio interface, build a chain of effects, and hear it live while you play. Everything runs on your computer: no account, no internet, no subscription.
+Description,2,Text,"guitar-fx is a multi-effect processor for electric guitar. Plug your guitar into an audio interface, build a chain of effects, and hear it live while you play. Everything runs on your computer: no account, no internet, no subscription.
+
+BUILD YOUR TONE
+- Amp models: five voicings (clean, crunch, brit, lead and modern high gain) with gain, bass, mid, treble, presence and master controls. They are modelled amps, not captures of specific hardware.
+- Cabinets: four built-in speaker cabinets, or load your own impulse responses (.wav files).
+- Pedals and studio effects: overdrive, compressor, noise gate, EQ, chorus, flanger, phaser, tremolo, auto-wah, echo, delay, reverb, harmonics, pitch shift, autotune, vocoder and a transient shaper.
+- Ambient and experimental: shimmer, wind, bitcrusher, ring modulator and reverse.
+
+A CHAIN YOU CAN SEE
+Every effect is a colour-coded card with its own icon and controls. Drag cards to reorder them, bypass any of them, use the same effect more than once, and watch each one's level as you play. Parameters change live, without dropouts.
+
+PLAY WITH CONFIDENCE
+- Live monitoring built for low delay, with a buffer size you choose. The app watches the queue between input and output and trims any delay that builds up during long sessions.
+- Tuner with note, cents and a needle, which can mute the output while you tune.
+- Metronome with tap tempo, accent and a beat light.
+- Looper: record, overdub, stop and clear, up to 60 seconds.
+
+START QUICKLY
+More than 20 ready-made chains, from clean sparkle and crunch rhythm to ambient wash and high-gain amp chains. Save your own chains and your last session is restored the next time you open the app.
+
+NOTES
+Actual latency depends on your audio interface, its Windows driver and the buffer size. A USB audio interface with a guitar (Hi-Z) input and headphones are recommended; speakers near an open microphone can cause feedback.
+","guitar-fx is a multi-effect processor for electric guitar. Plug your guitar into an audio interface, build a chain of effects, and hear it live while you play. Everything runs on your computer: no account, no internet, no subscription.
 
 BUILD YOUR TONE
 - Amp models: five voicings (clean, crunch, brit, lead and modern high gain) with gain, bass, mid, treble, presence and master controls. They are modelled amps, not captures of specific hardware.
@@ -22,23 +44,25 @@ More than 20 ready-made chains, from clean sparkle and crunch rhythm to ambient 
 NOTES
 Actual latency depends on your audio interface, its Windows driver and the buffer size. A USB audio interface with a guitar (Hi-Z) input and headphones are recommended; speakers near an open microphone can cause feedback.
 "
-ReleaseNotes,3,Text,,"Amp models, cabinet impulse responses, noise gate, EQ, tuner, metronome and looper.
+ReleaseNotes,3,Text,"Amp models, cabinet impulse responses, noise gate, EQ, tuner, metronome and looper.
+New chain button; drag to reorder effects; level graph in each card; last session restored.
+Fixed the input-to-output delay that could grow during long sessions with some effects.","Amp models, cabinet impulse responses, noise gate, EQ, tuner, metronome and looper.
 New chain button; drag to reorder effects; level graph in each card; last session restored.
 Fixed the input-to-output delay that could grow during long sessions with some effects."
-Title,4,Text,,guitar-fx
-ShortTitle,5,Text,,guitar-fx
-SortTitle,6,Text,,guitar-fx
-VoiceTitle,7,Text,,guitar effects
-ShortDescription,8,Text,,"A multi-effect guitar processor: amp models, cabinets, pedals, tuner, looper and metronome, with live monitoring."
-DevStudio,9,Text,,K3D0
-CopyrightTrademarkInformation,12,Text,,© 2026 K3D0
+Title,4,Text,guitar-fx,guitar-fx
+ShortTitle,5,Text,guitar-fx,guitar-fx
+SortTitle,6,Text,guitar-fx,guitar-fx
+VoiceTitle,7,Text,guitar effects,guitar effects
+ShortDescription,8,Text,"A multi-effect guitar processor: amp models, cabinets, pedals, tuner, looper and metronome, with live monitoring.","A multi-effect guitar processor: amp models, cabinets, pedals, tuner, looper and metronome, with live monitoring."
+DevStudio,9,Text,K3D0,K3D0
+CopyrightTrademarkInformation,12,Text,© 2026 K3D0,© 2026 K3D0
 AdditionalLicenseTerms,13,Text,,
-DesktopScreenshot1,100,Relative path (or URL to file in Partner Center),,images/screenshot1.png
-DesktopScreenshot2,101,Relative path (or URL to file in Partner Center),,images/screenshot2.png
-DesktopScreenshot3,102,Relative path (or URL to file in Partner Center),,images/screenshot3.png
-DesktopScreenshot4,103,Relative path (or URL to file in Partner Center),,images/screenshot4.png
-DesktopScreenshot5,104,Relative path (or URL to file in Partner Center),,images/screenshot5.png
-DesktopScreenshot6,105,Relative path (or URL to file in Partner Center),,images/screenshot6.png
+DesktopScreenshot1,100,Relative path (or URL to file in Partner Center),images/screenshot1.png,images/screenshot1.png
+DesktopScreenshot2,101,Relative path (or URL to file in Partner Center),images/screenshot2.png,images/screenshot2.png
+DesktopScreenshot3,102,Relative path (or URL to file in Partner Center),images/screenshot3.png,images/screenshot3.png
+DesktopScreenshot4,103,Relative path (or URL to file in Partner Center),images/screenshot4.png,images/screenshot4.png
+DesktopScreenshot5,104,Relative path (or URL to file in Partner Center),images/screenshot5.png,images/screenshot5.png
+DesktopScreenshot6,105,Relative path (or URL to file in Partner Center),images/screenshot6.png,images/screenshot6.png
 DesktopScreenshot7,106,Relative path (or URL to file in Partner Center),,
 DesktopScreenshot8,107,Relative path (or URL to file in Partner Center),,
 DesktopScreenshot9,108,Relative path (or URL to file in Partner Center),,
@@ -63,12 +87,12 @@ DesktopScreenshot27,126,Relative path (or URL to file in Partner Center),,
 DesktopScreenshot28,127,Relative path (or URL to file in Partner Center),,
 DesktopScreenshot29,128,Relative path (or URL to file in Partner Center),,
 DesktopScreenshot30,129,Relative path (or URL to file in Partner Center),,
-DesktopScreenshotCaption1,150,Text,,"A crunch amp chain: noise gate, amp model, cabinet and reverb. Each effect is a colour-coded card with its own controls."
-DesktopScreenshotCaption2,151,Text,,"An ambient chain with compressor, chorus, echo and a long reverb. Saved chains are listed under My chains."
-DesktopScreenshotCaption3,152,Text,,"A lead chain: compressor, hot overdrive, slapback delay, echo and reverb, with 20+ built-in chains on the right."
-DesktopScreenshotCaption4,153,Text,,"Robot voice: a vocoder and echo, one of the experimental chains."
-DesktopScreenshotCaption5,154,Text,,"A modern high-gain chain with noise gate, amp, cabinet and EQ."
-DesktopScreenshotCaption6,155,Text,,"A funk chain: squashed compression, envelope wah and a little drive."
+DesktopScreenshotCaption1,150,Text,"A crunch amp chain: noise gate, amp model, cabinet and reverb. Each effect is a colour-coded card with its own controls.","A crunch amp chain: noise gate, amp model, cabinet and reverb. Each effect is a colour-coded card with its own controls."
+DesktopScreenshotCaption2,151,Text,"An ambient chain with compressor, chorus, echo and a long reverb. Saved chains are listed under My chains.","An ambient chain with compressor, chorus, echo and a long reverb. Saved chains are listed under My chains."
+DesktopScreenshotCaption3,152,Text,"A lead chain: compressor, hot overdrive, slapback delay, echo and reverb, with 20+ built-in chains on the right.","A lead chain: compressor, hot overdrive, slapback delay, echo and reverb, with 20+ built-in chains on the right."
+DesktopScreenshotCaption4,153,Text,"Robot voice: a vocoder and echo, one of the experimental chains.","Robot voice: a vocoder and echo, one of the experimental chains."
+DesktopScreenshotCaption5,154,Text,"A modern high-gain chain with noise gate, amp, cabinet and EQ.","A modern high-gain chain with noise gate, amp, cabinet and EQ."
+DesktopScreenshotCaption6,155,Text,"A funk chain: squashed compression, envelope wah and a little drive.","A funk chain: squashed compression, envelope wah and a little drive."
 DesktopScreenshotCaption7,156,Text,,
 DesktopScreenshotCaption8,157,Text,,
 DesktopScreenshotCaption9,158,Text,,
@@ -313,30 +337,30 @@ SurfaceHubScreenshotCaption27,576,Text,,
 SurfaceHubScreenshotCaption28,577,Text,,
 SurfaceHubScreenshotCaption29,578,Text,,
 SurfaceHubScreenshotCaption30,579,Text,,
-StoreLogo720x1080,600,Relative path (or URL to file in Partner Center),,images/poster-720x1080.png
-StoreLogo1080x1080,601,Relative path (or URL to file in Partner Center),,images/logo-1080x1080.png
-StoreLogo300x300,602,Relative path (or URL to file in Partner Center),,images/logo-300x300.png
-OverrideLogosForWin10,603,True/False,,False
+StoreLogo720x1080,600,Relative path (or URL to file in Partner Center),images/poster-720x1080.png,images/poster-720x1080.png
+StoreLogo1080x1080,601,Relative path (or URL to file in Partner Center),images/logo-1080x1080.png,images/logo-1080x1080.png
+StoreLogo300x300,602,Relative path (or URL to file in Partner Center),images/logo-300x300.png,images/logo-300x300.png
+OverrideLogosForWin10,603,True/False,False,False
 StoreLogoOverride150x150,604,Relative path (or URL to file in Partner Center),,
 StoreLogoOverride71x71,605,Relative path (or URL to file in Partner Center),,
-PromoImage1920x1080,606,Relative path (or URL to file in Partner Center),,images/promo-1920x1080.png
-PromoImage2400x1200,607,Relative path (or URL to file in Partner Center),,images/promo-2400x1200.png
+PromoImage1920x1080,606,Relative path (or URL to file in Partner Center),images/promo-1920x1080.png,images/promo-1920x1080.png
+PromoImage2400x1200,607,Relative path (or URL to file in Partner Center),images/promo-2400x1200.png,images/promo-2400x1200.png
 XboxBrandedKeyArt584x800,608,Relative path (or URL to file in Partner Center),,
 XboxTitledHero1920x1080,609,Relative path (or URL to file in Partner Center),,
 XboxFeaturedPromo1080x1080,610,Relative path (or URL to file in Partner Center),,
 OptionalPromo358x358,611,Relative path (or URL to file in Partner Center),,
 OptionalPromo1000x800,612,Relative path (or URL to file in Partner Center),,
 OptionalPromo414x180,613,Relative path (or URL to file in Partner Center),,
-Feature1,700,Text,,"Five amp models: clean, crunch, brit, lead and modern high gain"
-Feature2,701,Text,,"Four built-in cabinets, plus your own .wav impulse responses"
-Feature3,702,Text,,"24 effects: drive, dynamics, EQ, modulation, delay, reverb, pitch and ambient"
-Feature4,703,Text,,Drag-to-reorder effect chain with colour-coded cards and per-effect level meters
-Feature5,704,Text,,Live parameter changes while you play
-Feature6,705,Text,,"Noise gate and 3-band EQ with sweepable mid, low-cut and high-cut"
-Feature7,706,Text,,"Built-in tuner with note, cents and needle display"
-Feature8,707,Text,,Metronome with tap tempo and a looper with overdub
-Feature9,708,Text,,More than 20 ready-made chains; save your own
-Feature10,709,Text,,"Works offline: no account, no ads, no data collected"
+Feature1,700,Text,"Five amp models: clean, crunch, brit, lead and modern high gain","Five amp models: clean, crunch, brit, lead and modern high gain"
+Feature2,701,Text,"Four built-in cabinets, plus your own .wav impulse responses","Four built-in cabinets, plus your own .wav impulse responses"
+Feature3,702,Text,"24 effects: drive, dynamics, EQ, modulation, delay, reverb, pitch and ambient","24 effects: drive, dynamics, EQ, modulation, delay, reverb, pitch and ambient"
+Feature4,703,Text,Drag-to-reorder effect chain with colour-coded cards and per-effect level meters,Drag-to-reorder effect chain with colour-coded cards and per-effect level meters
+Feature5,704,Text,Live parameter changes while you play,Live parameter changes while you play
+Feature6,705,Text,"Noise gate and 3-band EQ with sweepable mid, low-cut and high-cut","Noise gate and 3-band EQ with sweepable mid, low-cut and high-cut"
+Feature7,706,Text,"Built-in tuner with note, cents and needle display","Built-in tuner with note, cents and needle display"
+Feature8,707,Text,Metronome with tap tempo and a looper with overdub,Metronome with tap tempo and a looper with overdub
+Feature9,708,Text,More than 20 ready-made chains; save your own,More than 20 ready-made chains; save your own
+Feature10,709,Text,"Works offline: no account, no ads, no data collected","Works offline: no account, no ads, no data collected"
 Feature11,710,Text,,
 Feature12,711,Text,,
 Feature13,712,Text,,
@@ -347,10 +371,10 @@ Feature17,716,Text,,
 Feature18,717,Text,,
 Feature19,718,Text,,
 Feature20,719,Text,,
-MinimumHardwareReq1,800,Text,,Windows 10 version 1809 or later (x64 or ARM64)
-MinimumHardwareReq2,801,Text,,An audio input device (guitar audio interface or microphone) and an output device
-MinimumHardwareReq3,802,Text,,Graphics with DirectX 12 or Vulkan support
-MinimumHardwareReq4,803,Text,,4 GB of memory
+MinimumHardwareReq1,800,Text,Windows 10 version 1809 or later (x64 or ARM64),Windows 10 version 1809 or later (x64 or ARM64)
+MinimumHardwareReq2,801,Text,An audio input device (guitar audio interface or microphone) and an output device,An audio input device (guitar audio interface or microphone) and an output device
+MinimumHardwareReq3,802,Text,Graphics with DirectX 12 or Vulkan support,Graphics with DirectX 12 or Vulkan support
+MinimumHardwareReq4,803,Text,4 GB of memory,4 GB of memory
 MinimumHardwareReq5,804,Text,,
 MinimumHardwareReq6,805,Text,,
 MinimumHardwareReq7,806,Text,,
@@ -358,9 +382,9 @@ MinimumHardwareReq8,807,Text,,
 MinimumHardwareReq9,808,Text,,
 MinimumHardwareReq10,809,Text,,
 MinimumHardwareReq11,810,Text,,
-RecommendedHardwareReq1,850,Text,,USB audio interface with a guitar (Hi-Z) input
-RecommendedHardwareReq2,851,Text,,Headphones
-RecommendedHardwareReq3,852,Text,,A multi-core processor
+RecommendedHardwareReq1,850,Text,USB audio interface with a guitar (Hi-Z) input,USB audio interface with a guitar (Hi-Z) input
+RecommendedHardwareReq2,851,Text,Headphones,Headphones
+RecommendedHardwareReq3,852,Text,A multi-core processor,A multi-core processor
 RecommendedHardwareReq4,853,Text,,
 RecommendedHardwareReq5,854,Text,,
 RecommendedHardwareReq6,855,Text,,
@@ -369,13 +393,13 @@ RecommendedHardwareReq8,857,Text,,
 RecommendedHardwareReq9,858,Text,,
 RecommendedHardwareReq10,859,Text,,
 RecommendedHardwareReq11,860,Text,,
-SearchTerm1,900,Text,,guitar effects
-SearchTerm2,901,Text,,guitar amp simulator
-SearchTerm3,902,Text,,guitar pedalboard
-SearchTerm4,903,Text,,guitar tuner
-SearchTerm5,904,Text,,looper
-SearchTerm6,905,Text,,cabinet impulse response
-SearchTerm7,906,Text,,multi-effects
+SearchTerm1,900,Text,guitar effects,guitar effects
+SearchTerm2,901,Text,guitar amp simulator,guitar amp simulator
+SearchTerm3,902,Text,guitar pedalboard,guitar pedalboard
+SearchTerm4,903,Text,guitar tuner,guitar tuner
+SearchTerm5,904,Text,looper,looper
+SearchTerm6,905,Text,cabinet impulse response,cabinet impulse response
+SearchTerm7,906,Text,multi-effects,multi-effects
 TrailerToPlayAtTopOfListing,999,Relative path (or URL to file in Partner Center),,
 Trailer1,1000,Relative path (or URL to file in Partner Center),,
 Trailer2,1001,Relative path (or URL to file in Partner Center),,

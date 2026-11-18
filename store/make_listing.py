@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Fill the Partner Center listing export (all fields empty) -> store/msstore/listing.csv.
+"""Fill the Partner Center listing export (all fields empty) -> store/msstore/listing.csv (upload the store/msstore folder).
 usage: make_listing.py EXPORT.csv"""
-import csv, sys, pathlib, zipfile
+import csv, sys, pathlib
 
 HERE = pathlib.Path(__file__).parent
 REPO = "https://github.com/alfu32/guitar-fx"
@@ -72,15 +72,13 @@ for i, c in enumerate(CAPTIONS, 1):
 src = pathlib.Path(sys.argv[1]); rows = list(csv.reader(open(src, encoding="utf-8-sig", newline="")))
 used = set()
 for r in rows[1:]:
+    if r and len(r) > 4 and r[4] and not r[3]: r[3] = r[4]   # default column must mirror en-us
     if r and r[0] in VALUES and VALUES[r[0]] != "":
-        r[4] = VALUES[r[0]]; used.add(r[0])
+        r[3] = r[4] = VALUES[r[0]]; used.add(r[0])
 assert used == {k for k, v in VALUES.items() if v}, set(VALUES) - used
 for k in ("Title", "ShortTitle"): assert len(VALUES[k]) <= 100
 assert len(DESCRIPTION) <= 10000 and all(len(f) <= 200 for f in FEATURES) and all(len(c) <= 200 for c in CAPTIONS)
 assert all(len(t) <= 30 for t in TERMS) and sum(len(t.split()) for t in TERMS) <= 21 and len(SHORT) <= 1000
 out = HERE / "msstore" / "listing.csv"
 with open(out, "w", encoding="utf-8-sig", newline="") as f: csv.writer(f).writerows(rows)
-with zipfile.ZipFile(HERE / "guitar-fx-msstore-listing.zip", "w", zipfile.ZIP_DEFLATED) as z:
-    z.write(out, "listing.csv")
-    for p in sorted((HERE / "msstore" / "images").glob("*.png")): z.write(p, f"images/{p.name}")
 print("filled", len(used), "fields")
