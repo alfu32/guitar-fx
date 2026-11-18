@@ -137,3 +137,23 @@ Underruns while playing mean the CPU is too busy for the buffer: raise `--buffer
 `cargo test --release` also sweeps every live parameter of every effect and checks the control
 channel (set, insert, move, remove, bypass). It checks pitch accuracy (fast and high shifters, autotune, detector across
 the guitar range), effect order and repetition, and parameter validation.
+
+## Releases
+
+Pushing a tag `vX.Y.Z` that matches `version` in `Cargo.toml` runs `.github/workflows/release.yml`:
+it runs the tests, builds six targets in parallel and publishes one GitHub release.
+
+| Target | Files |
+| --- | --- |
+| Linux x86_64 / aarch64 | `.tar.gz`, `.deb`, `.snap` |
+| Windows x64 / ARM64 | `.zip`, `.msix` (Store identity `K3D0.guitar-fx`) |
+| macOS Intel / Apple Silicon | `.zip` (app bundle), `.dmg` |
+
+To release: bump `version`, commit, `git tag vX.Y.Z`, `git push origin master --tags`.
+To re-run an existing tag: `gh workflow run release.yml --ref vX.Y.Z`.
+
+Store identities are in `packaging/store-identity.json` (Microsoft Store ID `9P816T97D1CC`;
+Snap Store name `guitar-fx`). The workflow builds the packages but does not upload them to the
+stores. The MSIX is unsigned unless the repository secrets `GUITARFX_PFX_B64` and
+`GUITARFX_PFX_PASSWORD` exist; the Store signs submissions itself. macOS bundles are ad-hoc
+signed, not notarised.

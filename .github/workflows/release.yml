@@ -1,0 +1,129 @@
+name: Release
+
+# Release = commit, tag vX.Y.Z (matching Cargo.toml), push the tag.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:      # re-run for an existing tag: gh workflow run release.yml --ref vX.Y.Z
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: meta
+        name: Tag must be vX.Y.Z and equal the Cargo.toml version
+        run: |
+          [[ "$GITHUB_REF" == refs/tags/v* ]] || { echo "Select a v* tag, not a branch"; exit 1; }
+          tag="${GITHUB_REF#refs/tags/}"; version="${tag#v}"
+          cargo_version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Tag must be vX.Y.Z"; exit 1; }
+          [[ "$version" == "$cargo_version" ]] || { echo "Tag $tag != Cargo.toml $cargo_version"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"; echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  test:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
+      - run: cargo test --locked --release
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04,     os: linux,   arch: x86_64,  target: x86_64-unknown-linux-gnu }
+          - { runner: ubuntu-24.04-arm, os: linux,   arch: aarch64, target: aarch64-unknown-linux-gnu }
+          - { runner: windows-2025,     os: windows, arch: x64,     target: x86_64-pc-windows-msvc }
+          - { runner: windows-11-arm,   os: windows, arch: arm64,   target: aarch64-pc-windows-msvc }
+          - { runner: macos-15-intel,   os: macos,   arch: x86_64,  target: x86_64-apple-darwin }
+          - { runner: macos-15,         os: macos,   arch: aarch64, target: aarch64-apple-darwin }
+    name: ${{ matrix.os }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: "${{ matrix.target }}" }
+      - uses: Swatinem/rust-cache@v2
+        with: { key: "${{ matrix.target }}" }
+      - name: Linux build dependencies
+        if: matrix.os == 'linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
+      - name: Build
+        shell: bash
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Package (tar.gz, deb)
+        if: matrix.os == 'linux'
+        run: bash packaging/linux/package.sh "$VERSION" ${{ matrix.target }}
+      - name: Package (zip, MSIX)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        env:
+          GUITARFX_PFX_B64: ${{ secrets.GUITARFX_PFX_B64 }}
+          GUITARFX_PFX_PASSWORD: ${{ secrets.GUITARFX_PFX_PASSWORD }}
+        run: ./packaging/windows/package.ps1 -Arch '${{ matrix.arch }}' -Version "$env:VERSION" -Target '${{ matrix.target }}'
+      - name: Package (app bundle zip, DMG)
+        if: matrix.os == 'macos'
+        run: bash packaging/macos/package.sh "$VERSION" ${{ matrix.target }}
+      - name: Build Snap
+        if: matrix.os == 'linux'
+        uses: snapcore/action-build@v1
+        id: snap
+      - name: Collect Snap
+        if: matrix.os == 'linux'
+        run: mv "${{ steps.snap.outputs.snap }}" "dist/guitar-fx_${VERSION}_${{ matrix.arch }}.snap"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: [prepare, test, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { pattern: 'release-*', path: incoming, merge-multiple: true }
+      - name: Verify the whole matrix arrived, checksum, publish
+        run: |
+          cd incoming
+          for f in \
+            guitar-fx-$VERSION-linux-x86_64.tar.gz guitar-fx-$VERSION-linux-aarch64.tar.gz \
+            guitar-fx_${VERSION}_amd64.deb guitar-fx_${VERSION}_arm64.deb \
+            guitar-fx_${VERSION}_x86_64.snap guitar-fx_${VERSION}_aarch64.snap \
+            guitar-fx-$VERSION-windows-x64.zip guitar-fx-$VERSION-windows-arm64.zip \
+            guitar-fx-$VERSION-windows-x64.msix guitar-fx-$VERSION-windows-arm64.msix \
+            guitar-fx-$VERSION-macos-x86_64.zip guitar-fx-$VERSION-macos-aarch64.zip \
+            guitar-fx-$VERSION-macos-x86_64.dmg guitar-fx-$VERSION-macos-aarch64.dmg; do
+            test -s "$f" || { echo "MISSING $f"; exit 1; }
+          done
+          sha256sum * > SHA256SUMS.txt
+          cd ..
+          gh release create "$TAG" incoming/* --verify-tag --title "guitar-fx $VERSION" --generate-notes
