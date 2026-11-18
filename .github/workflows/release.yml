@@ -84,6 +84,9 @@ jobs:
       - name: Package (app bundle zip, DMG)
         if: matrix.os == 'macos'
         run: bash packaging/macos/package.sh "$VERSION" ${{ matrix.target }}
+      - name: Package (AppImage)
+        if: matrix.os == 'linux'
+        run: bash packaging/linux/appimage.sh "$VERSION" ${{ matrix.target }}
       - name: Package (snap)
         if: matrix.os == 'linux'
         run: bash packaging/linux/snap.sh "$VERSION" ${{ matrix.target }}
@@ -114,6 +117,7 @@ jobs:
             guitar-fx-$VERSION-linux-x86_64.tar.gz guitar-fx-$VERSION-linux-aarch64.tar.gz \
             guitar-fx_${VERSION}_amd64.deb guitar-fx_${VERSION}_arm64.deb \
             guitar-fx_${VERSION}_x86_64.snap guitar-fx_${VERSION}_aarch64.snap \
+            guitar-fx-$VERSION-x86_64.AppImage guitar-fx-$VERSION-aarch64.AppImage \
             guitar-fx-$VERSION-windows-x64.zip guitar-fx-$VERSION-windows-arm64.zip \
             guitar-fx-$VERSION-windows-x64.msix guitar-fx-$VERSION-windows-arm64.msix \
             guitar-fx-$VERSION-macos-x86_64.zip guitar-fx-$VERSION-macos-aarch64.zip \

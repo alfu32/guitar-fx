@@ -145,7 +145,7 @@ it runs the tests, builds six targets in parallel and publishes one GitHub relea
 
 | Target | Files |
 | --- | --- |
-| Linux x86_64 / aarch64 | `.tar.gz`, `.deb`, `.snap` |
+| Linux x86_64 / aarch64 | `.tar.gz`, `.deb`, `.snap`, `.AppImage` |
 | Windows x64 / ARM64 | `.zip`, `.msix` (Store identity `K3D0.guitar-fx`) |
 | macOS Intel / Apple Silicon | `.zip` (app bundle), `.dmg` |
 
