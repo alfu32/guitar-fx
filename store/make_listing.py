@@ -75,9 +75,9 @@ for i, c in enumerate(CAPTIONS, 1):
 src = pathlib.Path(sys.argv[1]); rows = list(csv.reader(open(src, encoding="utf-8-sig", newline="")))
 used = set()
 for r in rows[1:]:
-    if r and len(r) > 4 and r[4] and not r[3]: r[3] = r[4]   # default column must mirror en-us
+    if r and r[0] == 'OverrideLogosForWin10': r[3:] = ['False'] * (len(r) - 3)
     if r and r[0] in VALUES and VALUES[r[0]] != "":
-        r[3] = r[4] = VALUES[r[0]]; used.add(r[0])
+        r[3:] = [VALUES[r[0]]] * (len(r) - 3); used.add(r[0])   # default + every language column identical
 assert used == {k for k, v in VALUES.items() if v}, set(VALUES) - used
 for k in ("Title", "ShortTitle"): assert len(VALUES[k]) <= 100
 assert len(DESCRIPTION) <= 10000 and all(len(f) <= 200 for f in FEATURES) and all(len(c) <= 200 for c in CAPTIONS)
