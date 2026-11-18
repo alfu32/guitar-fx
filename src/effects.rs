@@ -41,6 +41,7 @@ pub fn build(spec: &Spec, sr: f32) -> Box<dyn Effect> {
         "harmonics" => Box::new(Harmonics::new(spec, sr)),
         "reverb" => Box::new(Reverb::new(spec, sr)),
         "tone-shift" => Box::new(ToneShift::new(spec, sr)),
+        "arpeggio" => Box::new(Arpeggio::new(spec, sr)),
         "autotune" => Box::new(Autotune::new(spec, sr)),
         "vocoder" => Box::new(Vocoder::new(spec, sr)),
         "transient" => Box::new(Transient::new(spec, sr)),
@@ -790,6 +791,179 @@ impl Effect for ToneShift {
         self.shifter.process(buf, self.semitones);
         for (x, dry) in buf.iter_mut().zip(&self.scratch) {
             *x = dry * (1.0 - self.mix) + *x * self.mix;
+        }
+    }
+    live_set!();
+}
+
+// ---------------------------------------------------------------- arpeggiator
+
+/// Chord tones (in semitones above the played note) for each `chord` choice.
+fn chord_intervals(name: &str) -> &'static [f32] {
+    match name {
+        "minor" => &[0.0, 3.0, 7.0],
+        "major7" => &[0.0, 4.0, 7.0, 11.0],
+        "minor7" => &[0.0, 3.0, 7.0, 10.0],
+        "sus4" => &[0.0, 5.0, 7.0],
+        "power" => &[0.0, 7.0, 12.0],
+        "dim" => &[0.0, 3.0, 6.0],
+        "octaves" => &[0.0, 12.0],
+        "pentatonic" => &[0.0, 2.0, 4.0, 7.0, 9.0],
+        "minor-pentatonic" => &[0.0, 3.0, 5.0, 7.0, 10.0],
+        _ => &[0.0, 4.0, 7.0],
+    }
+}
+
+const ARP_MAX_VOICES: usize = 10;
+
+/// Pitch-shift arpeggiator. Each chord tone is the input shifted by a fixed interval
+/// (a pitch-synchronous shifter, about 10 ms of delay); a tempo-driven sequence opens
+/// one tone at a time with a short fade, so a single sustained note turns into an
+/// arpeggio. It follows one note at a time, so play single notes or the lowest note of
+/// a chord.
+struct Arpeggio {
+    spec: Spec,
+    sr: f32,
+    tracker: PitchTracker,
+    voices: Vec<Granular>,
+    ratios: Vec<f32>,
+    env: Vec<f32>,
+    order: Vec<usize>,
+    random: bool,
+    index: usize,
+    current: usize,
+    pos: f32,
+    steps_done: usize,
+    step_len: f32,
+    base_len: f32,
+    gate: f32,
+    swing: f32,
+    attack: f32,
+    release: f32,
+    mix: f32,
+    rng: u32,
+}
+
+impl Arpeggio {
+    fn new(spec: Spec, sr: f32) -> Self {
+        let window = 10.0;
+        let mut s = Self {
+            tracker: PitchTracker::new(sr),
+            voices: (0..ARP_MAX_VOICES).map(|_| Granular::new(window, sr)).collect(),
+            ratios: Vec::new(),
+            env: vec![0.0; ARP_MAX_VOICES],
+            order: vec![0],
+            random: false,
+            index: 0,
+            current: 0,
+            pos: 0.0,
+            steps_done: 0,
+            step_len: sr * 0.3,
+            base_len: sr * 0.3,
+            gate: 0.6,
+            swing: 0.0,
+            attack: coef(2.0, sr),
+            release: coef(30.0, sr),
+            mix: 0.7,
+            rng: 0x1234_5678,
+            spec,
+            sr,
+        };
+        s.configure();
+        s
+    }
+
+    fn configure(&mut self) {
+        let mut tones: Vec<f32> = chord_intervals(self.spec.option("chord")).to_vec();
+        if self.spec.num("octaves") >= 1.5 {
+            let up: Vec<f32> = tones.iter().map(|t| t + 12.0).collect();
+            tones.extend(up);
+        }
+        tones.truncate(ARP_MAX_VOICES);
+        self.ratios = tones.iter().map(|t| 2f32.powf(t / 12.0)).collect();
+        let n = self.ratios.len();
+        self.random = false;
+        self.order = match self.spec.option("pattern") {
+            "down" => (0..n).rev().collect(),
+            "bounce" if n > 2 => (0..n).chain((1..n - 1).rev()).collect(),
+            "bounce" => (0..n).collect(),
+            "random" => {
+                self.random = true;
+                (0..n).collect()
+            }
+            _ => (0..n).collect(),
+        };
+        self.index %= self.order.len();
+        self.current = self.order[self.index];
+
+        let beats = match self.spec.option("rate") {
+            "1/4" => 1.0,
+            "1/8T" => 1.0 / 3.0,
+            "1/16" => 0.25,
+            "1/16T" => 1.0 / 6.0,
+            _ => 0.5,
+        };
+        self.base_len = 60.0 / self.spec.num("bpm") * beats * self.sr;
+        self.gate = self.spec.num("gate");
+        self.swing = self.spec.num("swing");
+        self.attack = coef(2.0, self.sr);
+        self.release = coef(self.spec.num("release"), self.sr);
+        self.mix = self.spec.num("mix");
+        self.step_len = self.length_of(self.steps_done);
+    }
+
+    /// Pairs of steps keep their combined length; swing lengthens the first and shortens the second.
+    fn length_of(&self, step: usize) -> f32 {
+        if step % 2 == 0 { self.base_len * (1.0 + self.swing) } else { self.base_len * (1.0 - self.swing) }
+    }
+
+    fn advance(&mut self) {
+        self.steps_done += 1;
+        if self.random && self.order.len() > 1 {
+            self.rng ^= self.rng << 13;
+            self.rng ^= self.rng >> 17;
+            self.rng ^= self.rng << 5;
+            let mut next = (self.rng as usize) % self.order.len();
+            if next == self.current {
+                next = (next + 1) % self.order.len();
+            }
+            self.current = next;
+        } else {
+            self.index = (self.index + 1) % self.order.len();
+            self.current = self.order[self.index];
+        }
+        self.step_len = self.length_of(self.steps_done);
+    }
+}
+
+impl Effect for Arpeggio {
+    fn process(&mut self, buf: &mut [f32]) {
+        if self.tracker.push(buf) {
+            if let Some(f0) = self.tracker.detect() {
+                let period = self.tracker.sr / f0;
+                for v in &mut self.voices {
+                    v.set_period(period);
+                }
+            }
+        }
+        let n = self.ratios.len();
+        for x in buf.iter_mut() {
+            let dry = *x;
+            while self.pos >= self.step_len {
+                self.pos -= self.step_len;
+                self.advance();
+            }
+            let open = self.pos < self.step_len * self.gate;
+            let mut wet = 0.0;
+            for i in 0..n {
+                let v = self.voices[i].tick(dry, self.ratios[i]);
+                let target = if open && i == self.current { 1.0 } else { 0.0 };
+                let c = if target > self.env[i] { self.attack } else { self.release };
+                self.env[i] = target + (self.env[i] - target) * c;
+                wet += v * self.env[i];
+            }
+            self.pos += 1.0;
+            *x = dry * (1.0 - self.mix) + wet * self.mix;
         }
     }
     live_set!();
@@ -1940,6 +2114,47 @@ mod tests {
             let got = measure(&out);
             assert!((got / want - 1.0).abs() < 0.03, "{semis:+} st: wanted {want:.1} Hz, got {got:.1} Hz");
         }
+    }
+
+
+    #[test]
+    fn arpeggio_steps_through_the_chord() {
+        // 120 bpm, quarter notes: 0.5 s per step; a major triad climbs 0, +4, +7 semitones.
+        let out = run_chain(
+            &[("arpeggio", "mix=1,chord=major,pattern=up,rate=1/4,bpm=120,gate=1,release=20")],
+            &sine(220.0, 3.2),
+        );
+        let step = (0.5 * SR) as usize;
+        let mut seen = Vec::new();
+        for k in 0..6 {
+            let a = (k as f32 * 0.5 + 0.1) * SR;
+            let w = &out[a as usize..a as usize + (0.35 * SR) as usize];
+            seen.push(measure(w) / 220.0);
+        }
+        let want: Vec<f32> = [0.0f32, 4.0, 7.0, 0.0, 4.0, 7.0].iter().map(|s| 2f32.powf(s / 12.0)).collect();
+        // The first step starts while the pitch tracker is still locking on, so skip it.
+        for k in 1..6 {
+            assert!((seen[k] / want[k] - 1.0).abs() < 0.04, "step {k}: ratio {:.3}, wanted {:.3}", seen[k], want[k]);
+        }
+        let _ = step;
+        assert!(out.iter().all(|v| v.is_finite() && v.abs() < 2.5));
+    }
+
+    #[test]
+    fn arpeggio_patterns_and_gate_are_sound() {
+        for pat in ["up", "down", "bounce", "random"] {
+            for chord in ["major", "pentatonic", "octaves"] {
+                let spec = format!("chord={chord},pattern={pat},octaves=2,swing=0.3,rate=1/16T,bpm=200");
+                let out = run_chain(&[("arpeggio", &spec)], &sine(196.0, 1.0));
+                assert!(out.iter().all(|v| v.is_finite() && v.abs() < 3.0), "{pat}/{chord}");
+                assert!(rms(&out) > 0.05, "{pat}/{chord} is silent");
+            }
+        }
+        // a short gate leaves gaps between notes
+        let out = run_chain(&[("arpeggio", "mix=1,rate=1/4,bpm=120,gate=0.3,release=5")], &sine(220.0, 2.0));
+        let gap = rms_range(&out, 0.9, 0.98);
+        let note = rms_range(&out, 1.02, 1.12);
+        assert!(gap < note * 0.3, "gap {gap} vs note {note}");
     }
 
     #[test]

@@ -49,6 +49,10 @@ pub const NOTES: &[&str] = &["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A
 pub const SCALES: &[&str] =
     &["chromatic", "major", "minor", "pentatonic", "minor-pentatonic", "blues"];
 const MODES: &[&str] = &["high", "fast"];
+const CHORDS: &[&str] =
+    &["major", "minor", "major7", "minor7", "sus4", "power", "dim", "octaves", "pentatonic", "minor-pentatonic"];
+const ARP_PATTERNS: &[&str] = &["up", "down", "bounce", "random"];
+const ARP_RATES: &[&str] = &["1/4", "1/8", "1/8T", "1/16", "1/16T"];
 const SHAPES: &[&str] = &["sine", "square"];
 const AMP_MODELS: &[&str] = &["clean", "crunch", "brit", "lead", "modern"];
 const CABS: &[&str] = &["1x12-open", "2x12", "4x12", "1x8-vintage"];
@@ -213,6 +217,22 @@ pub const EFFECTS: &[EffectDef] = &[
             num("attack", -0.6, -1.0, 1.0, "", true),
             num("time", 15.0, 2.0, 60.0, "ms", true),
             num("mix", 1.0, 0.0, 1.0, "", true),
+        ],
+    },
+    EffectDef {
+        name: "arpeggio",
+        title: "Arpeggiator",
+        primary: "mix",
+        params: &[
+            num("mix", 0.7, 0.0, 1.0, "", true),
+            choice("chord", CHORDS, 0, true),
+            choice("pattern", ARP_PATTERNS, 0, true),
+            choice("rate", ARP_RATES, 1, true),
+            num("bpm", 100.0, 40.0, 240.0, "bpm", true),
+            num("octaves", 1.0, 1.0, 2.0, "", true),
+            num("gate", 0.6, 0.1, 1.0, "", true),
+            num("swing", 0.0, 0.0, 0.5, "", true),
+            num("release", 30.0, 5.0, 300.0, "ms", true),
         ],
     },
     EffectDef {

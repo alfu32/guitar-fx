@@ -78,6 +78,7 @@ Each takes `name=value,name=value`; a bare number sets the first parameter (mark
 | `--eq` | mid* dB (0), low dB, high dB, mid-freq Hz (800), mid-q (0.8), lowcut Hz (20 = off), highcut Hz (20000 = off) |
 | `--amp` | gain* (0.5), model `clean`/`crunch`/`brit`/`lead`/`modern` (crunch), bass, mid, treble, presence, master (0.5 each), level (1) — modelled tube amp, 2x oversampled; put a cabinet after it |
 | `--cabinet` | cab* `1x12-open`/`2x12`/`4x12`/`1x8-vintage`, ir FILE (a `.wav` impulse response; name in the `ir` config folder or a path), trim ms (50), mix (1), level dB (0) |
+| `--arpeggio` | mix* (0.7), chord (major, minor, major7, minor7, sus4, power, dim, octaves, pentatonic, minor-pentatonic), pattern (up, down, bounce, random), rate (1/4, 1/8, 1/8T, 1/16, 1/16T), bpm (100), octaves 1-2, gate (0.6), swing, release ms — turns a single sustained note into an arpeggio of pitch-shifted chord tones (about 10 ms of delay; follows one note, so play single notes or the lowest note of a chord) |
 | `--transient` | attack* -1..1 (-0.6; negative softens the pick, positive sharpens), time ms (15), mix (1) — transient shaper |
 | `--bitcrusher` | bits* (8), rate Hz (12000), mix (1) |
 | `--ringmod` | freq* Hz (150), mix (0.5), shape `sine`/`square` |

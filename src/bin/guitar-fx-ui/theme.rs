@@ -17,6 +17,7 @@ pub fn accent(effect: &str) -> Color32 {
         "harmonics" => (245, 150, 55),
         "reverb" => (95, 135, 205),
         "tone-shift" => (60, 205, 100),
+        "arpeggio" => (70, 205, 235),
         "autotune" => (235, 65, 130),
         "vocoder" => (190, 90, 225),
         "transient" => (225, 150, 90),
@@ -149,6 +150,15 @@ pub fn effect_icon(ui: &mut egui::Ui, name: &str, color: Color32, size: f32) {
             p.line_segment([at(0.5, -0.1), at(0.5, 1.1)], Stroke::new(w * 0.7, color));
             p.line_segment([at(-0.1, 0.5), at(1.1, 0.5)], Stroke::new(w * 0.7, color));
             p.circle_filled(c, rad * 0.2, color);
+        }
+        "arpeggio" => {
+            // rising steps, each topped by a note head
+            for i in 0..4 {
+                let x = 0.08 + i as f32 * 0.24;
+                let y = 0.8 - i as f32 * 0.2;
+                p.line_segment([at(x, y), at(x + 0.18, y)], st);
+                p.circle_filled(at(x + 0.09, y - 0.12), rad * 0.11, color);
+            }
         }
         "vocoder" => {
             for i in 0..5 {

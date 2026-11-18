@@ -25,6 +25,7 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("Clean sparkle", include_str!("../presets/builtin/clean-sparkle.fx")),
     ("Crunch rhythm", include_str!("../presets/builtin/crunch-rhythm.fx")),
     ("Lead solo", include_str!("../presets/builtin/lead-solo.fx")),
+    ("Arpeggio shimmer", include_str!("../presets/builtin/arpeggio-shimmer.fx")),
     ("Ambient wash", include_str!("../presets/builtin/ambient-wash.fx")),
     ("Funk wah", include_str!("../presets/builtin/funk-wah.fx")),
     ("Surf tremolo", include_str!("../presets/builtin/surf-tremolo.fx")),
