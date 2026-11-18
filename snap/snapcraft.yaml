@@ -29,7 +29,7 @@ parts:
     plugin: rust
     source: .
     rust-channel: stable
-    build-packages: [pkg-config, libasound2-dev]
+    build-packages: [pkg-config, libasound2-dev, clang, libclang-dev, g++]
     stage-packages: [libasound2t64, libasound2-plugins, libvulkan1, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libx11-6, libxcursor1, libxi6, libxrandr2, libgl1, libegl1]
     override-pull: |
       craftctl default
