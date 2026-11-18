@@ -15,6 +15,11 @@ pub struct Preset {
 
 /// Chains shipped with the program: (display name, preset text).
 pub const BUILTIN: &[(&str, &str)] = &[
+    ("Amp: clean 2x12", include_str!("../presets/builtin/amp-clean.fx")),
+    ("Amp: crunch 4x12", include_str!("../presets/builtin/amp-crunch.fx")),
+    ("Amp: brit stack", include_str!("../presets/builtin/amp-brit.fx")),
+    ("Amp: lead", include_str!("../presets/builtin/amp-lead.fx")),
+    ("Amp: modern high gain", include_str!("../presets/builtin/amp-modern.fx")),
     ("Guitar clean", include_str!("../presets/builtin/guitar-clean.fx")),
     ("Guitar crunch", include_str!("../presets/builtin/guitar-crunch.fx")),
     ("Clean sparkle", include_str!("../presets/builtin/clean-sparkle.fx")),
@@ -27,9 +32,7 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("Octave thick", include_str!("../presets/builtin/octave-thick.fx")),
     ("Robot voice", include_str!("../presets/builtin/robot-voice.fx")),
     ("Autotune pop", include_str!("../presets/builtin/autotune-pop.fx")),
-    ("Zen kalimba", include_str!("../presets/builtin/zen-kalimba.fx")),
     ("Ethereal bloom", include_str!("../presets/builtin/ethereal-bloom.fx")),
-    ("Frozen pad", include_str!("../presets/builtin/frozen-pad.fx")),
     ("Soft pick", include_str!("../presets/builtin/soft-pick.fx")),
     ("Lofi grit", include_str!("../presets/builtin/lofi-grit.fx")),
     ("Backwards dream", include_str!("../presets/builtin/backwards-dream.fx")),

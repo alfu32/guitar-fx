@@ -74,24 +74,38 @@ Each takes `name=value,name=value`; a bare number sets the first parameter (mark
 | `--tone-shift` | semitones* (0), cents (0), mix (1), mode `high`/`fast`, window ms (10, fast only) |
 | `--autotune` | amount* (1), key (C), scale (chromatic, major, minor, pentatonic, minor-pentatonic, blues), speed ms (40; 0 = hard), mode, window |
 | `--vocoder` | mix* (1), bands (16), carrier Hz (110), release ms (15) |
+| `--gate` | threshold* dB (-55), attack ms (1), hold ms (60), release ms (120, time to fall ~60 dB), depth dB (-80) |
+| `--eq` | mid* dB (0), low dB, high dB, mid-freq Hz (800), mid-q (0.8), lowcut Hz (20 = off), highcut Hz (20000 = off) |
+| `--amp` | gain* (0.5), model `clean`/`crunch`/`brit`/`lead`/`modern` (crunch), bass, mid, treble, presence, master (0.5 each), level (1) — modelled tube amp, 2x oversampled; put a cabinet after it |
+| `--cabinet` | cab* `1x12-open`/`2x12`/`4x12`/`1x8-vintage`, ir FILE (a `.wav` impulse response; name in the `ir` config folder or a path), trim ms (50), mix (1), level dB (0) |
 | `--transient` | attack* -1..1 (-0.6; negative softens the pick, positive sharpens), time ms (15), mix (1) — transient shaper |
-| `--freeze` | mix* (0.7), sustain s (8), length ms (50), settle ms (60), sensitivity (0.5) — **prolonger**: samples the note after each pick and loops it until the next pick |
-| `--pick-noise` | amount* (0.3), decay ms (60), tone (1 = white), mode `burst`/`follow`, sensitivity — white noise on the picked note |
 | `--bitcrusher` | bits* (8), rate Hz (12000), mix (1) |
 | `--ringmod` | freq* Hz (150), mix (0.5), shape `sine`/`square` |
 | `--reverse` | mix* (0.7), time ms (400) — reversed swells |
-| `--kalimba` | mix* (0.6), octave 0..2 (1), decay ms (900), dry (1), sensitivity — each pick becomes a kalimba tine at the note's pitch |
 | `--wind` | mix* (0.5), level (0.3), follow (0.7), rate Hz (0.15), q (5) — breathy wind that follows your playing |
-| `--swell` | rise* ms (400), sensitivity — each pick fades in slowly |
 | `--shimmer` | mix* (0.4), shimmer (0.5), pitch st (12), time s (4), size m (15) — reverb fed back through a pitch shifter |
 
-The experimental and zen effects (freeze, pick-noise, bitcrusher, ringmod, reverse, kalimba,
-wind, swell, shimmer) react to the moment a string is picked. Freeze and kalimba need a single
-note at a time (they track pitch); `sensitivity` sets how easily a pick is detected.
+The experimental and zen effects (bitcrusher, ringmod, reverse, wind, shimmer) are creative extras; shimmer adds about 50 ms to its wet sound only.
 
 Pitch effects have two modes. `high` is the cleanest and works on chords but adds
 50+ ms. `fast` locks to the detected note period: about 10 ms, accurate on one note at a
 time (guitar down to low E), and it degrades on chords.
+
+## Practice tools (UI)
+
+A second bar under the controls holds a **metronome** (bpm, beats per bar, click volume, tap
+tempo, a light that flashes on every beat), a **looper** (Record, then Close loop, Overdub,
+Stop, Clear; it records what comes out of the chain, up to 60 s) and a **tuner** (note, cents
+and a needle; the output can be muted while tuning). Cabinet impulse responses go in
+`~/.config/guitar-fx/ir/` (`%APPDATA%\guitar-fx\ir` on Windows) and appear in the Cabinet card.
+
+## Latency stays flat
+
+Input and output are separate streams with separate clocks, so a CPU stall or clock drift
+could leave extra audio queued and the delay would creep up while you play. The live engine
+now measures the standing queue every quarter second and trims the excess (one averaged
+sample at a time, or in one step after a big stall). The UI shows `queue x ms`, and `-v`
+prints it with the number of samples trimmed.
 
 ## Options
 

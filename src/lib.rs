@@ -5,4 +5,6 @@ pub mod chain;
 pub mod effects;
 pub mod live;
 pub mod params;
+pub mod paths;
 pub mod preset;
+pub mod tools;

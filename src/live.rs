@@ -166,25 +166,62 @@ where
 
     let out_meters = meters.clone();
     let mut primed = false;
+    // Latency control. The two streams have separate clocks and callbacks, so any stall
+    // (a CPU spike, a slow effect) or clock drift would leave extra samples sitting in the
+    // queue for good, and the delay between playing and hearing would creep up. The queue
+    // never needs more than about a block, so the smallest fill seen over a quarter second
+    // is the "standing" excess: that is removed again, one sample per callback when small
+    // (averaged, inaudible) and in one jump after a big stall.
+    let window_frames = sr / 4;
+    let mut window_seen = 0usize;
+    let mut min_fill = usize::MAX;
+    let mut to_drop = 0usize;
     let output_fn = move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+        let frames = data.len() / out_ch;
+        let fill = consumer.occupied_len();
         // Wait for a little input before starting so tiny jitters don't underrun.
         if !primed {
-            if consumer.occupied_len() < data.len() / out_ch {
+            if fill < frames {
                 data.fill(T::EQUILIBRIUM);
                 return;
             }
             primed = true;
         }
+        min_fill = min_fill.min(fill);
+        window_seen += frames;
+        if window_seen >= window_frames {
+            to_drop = min_fill.saturating_sub(frames + frames / 2);
+            window_seen = 0;
+            min_fill = usize::MAX;
+        }
+        if to_drop > 256 {
+            let n = consumer.skip(to_drop);
+            out_meters.add_trimmed(n as u32);
+            to_drop = 0;
+        }
+        let mut shave = to_drop > 0;
+        if shave {
+            to_drop -= 1;
+            out_meters.add_trimmed(1);
+        }
         let mut starved = false;
         for frame in data.chunks_mut(out_ch) {
-            let s = consumer.try_pop().unwrap_or_else(|| {
+            let mut s = consumer.try_pop().unwrap_or_else(|| {
                 starved = true;
                 0.0
             });
+            if shave {
+                if let Some(next) = consumer.try_pop() {
+                    s = 0.5 * (s + next);
+                }
+                shave = false;
+            }
             frame.fill(s.clamp(-1.0, 1.0).to_sample::<T>());
         }
+        out_meters.set_buffered(consumer.occupied_len() as u32);
         if starved {
             out_meters.add_xrun();
+            primed = false; // rebuild the cushion instead of stuttering on every callback
         }
     };
 

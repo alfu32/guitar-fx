@@ -6,6 +6,8 @@ pub enum Value {
     Num(f32),
     Choice(usize),
     Auto,
+    /// Free text (an impulse-response file name). Interned, so `Value` stays `Copy`.
+    Text(&'static str),
 }
 
 pub enum Kind {
@@ -13,6 +15,7 @@ pub enum Kind {
     Choice { options: &'static [&'static str], default: usize },
     /// A number, or `auto` (the default).
     AutoNum { min: f32, max: f32, unit: &'static str },
+    Text { default: &'static str },
 }
 
 pub struct ParamDef {
@@ -34,6 +37,10 @@ const fn num(key: &'static str, default: f32, min: f32, max: f32, unit: &'static
     ParamDef { key, kind: Kind::Num { min, max, default, unit }, live }
 }
 
+const fn text_param(key: &'static str, default: &'static str, live: bool) -> ParamDef {
+    ParamDef { key, kind: Kind::Text { default }, live }
+}
+
 const fn choice(key: &'static str, options: &'static [&'static str], default: usize, live: bool) -> ParamDef {
     ParamDef { key, kind: Kind::Choice { options, default }, live }
 }
@@ -42,8 +49,9 @@ pub const NOTES: &[&str] = &["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A
 pub const SCALES: &[&str] =
     &["chromatic", "major", "minor", "pentatonic", "minor-pentatonic", "blues"];
 const MODES: &[&str] = &["high", "fast"];
-const NOISE_MODES: &[&str] = &["burst", "follow"];
 const SHAPES: &[&str] = &["sine", "square"];
+const AMP_MODELS: &[&str] = &["clean", "crunch", "brit", "lead", "modern"];
+const CABS: &[&str] = &["1x12-open", "2x12", "4x12", "1x8-vintage"];
 
 pub const EFFECTS: &[EffectDef] = &[
     EffectDef {
@@ -207,31 +215,60 @@ pub const EFFECTS: &[EffectDef] = &[
             num("mix", 1.0, 0.0, 1.0, "", true),
         ],
     },
+    EffectDef {
+        name: "gate",
+        title: "Noise gate",
+        primary: "threshold",
+        params: &[
+            num("threshold", -55.0, -90.0, -20.0, "dB", true),
+            num("attack", 1.0, 0.1, 50.0, "ms", true),
+            num("hold", 60.0, 0.0, 500.0, "ms", true),
+            num("release", 120.0, 5.0, 1500.0, "ms", true),
+            num("depth", -80.0, -90.0, 0.0, "dB", true),
+        ],
+    },
+    EffectDef {
+        name: "eq",
+        title: "EQ",
+        primary: "mid",
+        params: &[
+            num("low", 0.0, -15.0, 15.0, "dB", true),
+            num("mid", 0.0, -15.0, 15.0, "dB", true),
+            num("high", 0.0, -15.0, 15.0, "dB", true),
+            num("mid-freq", 800.0, 200.0, 5000.0, "Hz", true),
+            num("mid-q", 0.8, 0.3, 4.0, "", true),
+            num("lowcut", 20.0, 20.0, 400.0, "Hz", true),
+            num("highcut", 20000.0, 2000.0, 20000.0, "Hz", true),
+        ],
+    },
+    EffectDef {
+        name: "amp",
+        title: "Amp",
+        primary: "gain",
+        params: &[
+            choice("model", AMP_MODELS, 1, true),
+            num("gain", 0.5, 0.0, 1.0, "", true),
+            num("bass", 0.5, 0.0, 1.0, "", true),
+            num("mid", 0.5, 0.0, 1.0, "", true),
+            num("treble", 0.5, 0.0, 1.0, "", true),
+            num("presence", 0.5, 0.0, 1.0, "", true),
+            num("master", 0.5, 0.0, 1.0, "", true),
+            num("level", 1.0, 0.0, 2.0, "", true),
+        ],
+    },
+    EffectDef {
+        name: "cabinet",
+        title: "Cabinet",
+        primary: "cab",
+        params: &[
+            choice("cab", CABS, 0, false),
+            text_param("ir", "", false),
+            num("trim", 50.0, 10.0, 100.0, "ms", false),
+            num("mix", 1.0, 0.0, 1.0, "", true),
+            num("level", 0.0, -12.0, 12.0, "dB", true),
+        ],
+    },
     // ---- experimental
-    EffectDef {
-        name: "freeze",
-        title: "Freeze",
-        primary: "mix",
-        params: &[
-            num("mix", 0.7, 0.0, 1.0, "", true),
-            num("sustain", 8.0, 0.2, 60.0, "s", true),
-            num("length", 50.0, 10.0, 200.0, "ms", true),
-            num("settle", 60.0, 20.0, 400.0, "ms", true),
-            num("sensitivity", 0.5, 0.0, 1.0, "", true),
-        ],
-    },
-    EffectDef {
-        name: "pick-noise",
-        title: "Pick noise",
-        primary: "amount",
-        params: &[
-            num("amount", 0.3, 0.0, 1.0, "", true),
-            num("decay", 60.0, 5.0, 800.0, "ms", true),
-            num("tone", 1.0, 0.0, 1.0, "", true),
-            choice("mode", NOISE_MODES, 0, true),
-            num("sensitivity", 0.5, 0.0, 1.0, "", true),
-        ],
-    },
     EffectDef {
         name: "bitcrusher",
         title: "Bitcrusher",
@@ -260,18 +297,6 @@ pub const EFFECTS: &[EffectDef] = &[
     },
     // ---- zen and ethereal
     EffectDef {
-        name: "kalimba",
-        title: "Kalimba",
-        primary: "mix",
-        params: &[
-            num("mix", 0.6, 0.0, 1.0, "", true),
-            num("octave", 1.0, 0.0, 2.0, "", true),
-            num("decay", 900.0, 100.0, 4000.0, "ms", true),
-            num("dry", 1.0, 0.0, 1.0, "", true),
-            num("sensitivity", 0.5, 0.0, 1.0, "", true),
-        ],
-    },
-    EffectDef {
         name: "wind",
         title: "Wind",
         primary: "mix",
@@ -282,12 +307,6 @@ pub const EFFECTS: &[EffectDef] = &[
             num("rate", 0.15, 0.02, 2.0, "Hz", true),
             num("q", 5.0, 1.0, 20.0, "", true),
         ],
-    },
-    EffectDef {
-        name: "swell",
-        title: "Swell",
-        primary: "rise",
-        params: &[num("rise", 400.0, 50.0, 3000.0, "ms", true), num("sensitivity", 0.5, 0.0, 1.0, "", true)],
     },
     EffectDef {
         name: "shimmer",
@@ -304,9 +323,9 @@ pub const EFFECTS: &[EffectDef] = &[
 ];
 
 /// Effects shown under "Experimental" in the UI.
-pub const EXPERIMENTAL: &[&str] = &["freeze", "pick-noise", "bitcrusher", "ringmod", "reverse"];
+pub const EXPERIMENTAL: &[&str] = &["bitcrusher", "ringmod", "reverse"];
 /// Effects shown under "Zen & ethereal" in the UI.
-pub const ZEN: &[&str] = &["kalimba", "wind", "swell", "shimmer"];
+pub const ZEN: &[&str] = &["wind", "shimmer"];
 
 pub fn effect_def(name: &str) -> Option<&'static EffectDef> {
     EFFECTS.iter().find(|e| e.name == name)
@@ -318,6 +337,7 @@ impl ParamDef {
             Kind::Num { default, .. } => Value::Num(default),
             Kind::Choice { default, .. } => Value::Choice(default),
             Kind::AutoNum { .. } => Value::Auto,
+            Kind::Text { default } => Value::Text(default),
         }
     }
 }
@@ -350,6 +370,13 @@ impl Spec {
         match self.get(key) {
             Value::Num(n) => n,
             other => panic!("parameter '{key}' is {other:?}, not a number"),
+        }
+    }
+
+    pub fn text(&self, key: &str) -> &'static str {
+        match self.get(key) {
+            Value::Text(t) => t,
+            other => panic!("parameter '{key}' is {other:?}, not text"),
         }
     }
 
@@ -396,6 +423,7 @@ impl Spec {
                 }
             };
             let value = match &p.kind {
+                Kind::Text { .. } => Value::Text(intern(text)),
                 Kind::Num { min, max, .. } => Value::Num(number(*min, *max)?),
                 Kind::AutoNum { min, max, .. } => {
                     if text.eq_ignore_ascii_case("auto") {
@@ -427,12 +455,27 @@ impl Spec {
             let text = match (&p.kind, v) {
                 (_, Value::Num(n)) => format!("{n}"),
                 (Kind::Choice { options, .. }, Value::Choice(i)) => options[*i].to_string(),
+                (_, Value::Text(t)) => t.to_string(),
                 _ => "auto".to_string(),
             };
             parts.push(format!("{}={}", p.key, text));
         }
         parts.join(",")
     }
+}
+
+/// Text values are leaked once per distinct string so `Value` can stay `Copy`.
+pub fn intern(text: &str) -> &'static str {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+    static POOL: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
+    let mut pool = POOL.get_or_init(Default::default).lock().unwrap();
+    if let Some(s) = pool.get(text) {
+        return s;
+    }
+    let leaked: &'static str = Box::leak(text.to_string().into_boxed_str());
+    pool.insert(leaked);
+    leaked
 }
 
 /// Accept flats and Unicode accidentals for note names (Db -> C#).

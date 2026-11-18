@@ -34,6 +34,7 @@ first parameter listed (marked *). Defaults are in parentheses.
                         format!("{}{star} {min}..{max}{unit} ({default})", p.key)
                     }
                     Kind::AutoNum { min, max, unit } => format!("{} {min}..{max}{unit} (auto)", p.key),
+                    Kind::Text { .. } => format!("{} FILE", p.key),
                     Kind::Choice { options, default } => {
                         format!("{} {} ({})", p.key, options.join("|"), options[*default])
                     }
@@ -228,7 +229,14 @@ fn run_live(cli: &Cli) -> Result<(), String> {
         std::thread::sleep(std::time::Duration::from_secs(1));
         if cli.verbose {
             let m = &running.control.meters;
-            eprintln!("in {:.4}  out {:.4}  dropouts {}", m.in_peak(), m.out_peak(), m.xruns());
+            eprintln!(
+                "in {:.4}  out {:.4}  dropouts {}  queue {:.1} ms  trimmed {}",
+                m.in_peak(),
+                m.out_peak(),
+                m.xruns(),
+                m.buffered() as f32 / running.control.sample_rate * 1000.0,
+                m.trimmed()
+            );
         }
     }
 }

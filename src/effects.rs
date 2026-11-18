@@ -44,14 +44,14 @@ pub fn build(spec: &Spec, sr: f32) -> Box<dyn Effect> {
         "autotune" => Box::new(Autotune::new(spec, sr)),
         "vocoder" => Box::new(Vocoder::new(spec, sr)),
         "transient" => Box::new(Transient::new(spec, sr)),
-        "freeze" => Box::new(Freeze::new(spec, sr)),
-        "pick-noise" => Box::new(PickNoise::new(spec, sr)),
+        "gate" => Box::new(Gate::new(spec, sr)),
+        "eq" => Box::new(Eq::new(spec, sr)),
+        "amp" => Box::new(Amp::new(spec, sr)),
+        "cabinet" => Box::new(Cabinet::new(spec, sr)),
         "bitcrusher" => Box::new(Bitcrusher::new(spec)),
         "ringmod" => Box::new(RingMod::new(spec, sr)),
         "reverse" => Box::new(Reverse::new(spec, sr)),
-        "kalimba" => Box::new(Kalimba::new(spec, sr)),
         "wind" => Box::new(Wind::new(spec, sr)),
-        "swell" => Box::new(Swell::new(spec, sr)),
         "shimmer" => Box::new(Shimmer::new(spec, sr)),
         other => unreachable!("no effect named {other}"),
     }
@@ -610,19 +610,19 @@ const WINDOW: usize = 1536;
 const HOP: usize = 256;
 
 /// Rolling window of recent input plus a YIN pitch detector.
-struct PitchTracker {
+pub(crate) struct PitchTracker {
     hist: Vec<f32>,
     since: usize,
     sr: f32,
 }
 
 impl PitchTracker {
-    fn new(sr: f32) -> Self {
+    pub(crate) fn new(sr: f32) -> Self {
         Self { hist: vec![0.0; WINDOW], since: 0, sr }
     }
 
     /// Feed a block; returns true when it is time to run `detect` again.
-    fn push(&mut self, buf: &[f32]) -> bool {
+    pub(crate) fn push(&mut self, buf: &[f32]) -> bool {
         let n = buf.len();
         if n >= WINDOW {
             self.hist.copy_from_slice(&buf[n - WINDOW..]);
@@ -641,7 +641,7 @@ impl PitchTracker {
     /// YIN fundamental-frequency estimate of the history window; None if unvoiced.
     /// Runs on a 4x downsampled copy (cheap enough for a 64-frame live callback);
     /// parabolic interpolation recovers the precision. Detects down to about 60 Hz.
-    fn detect(&self) -> Option<f32> {
+    pub(crate) fn detect(&self) -> Option<f32> {
         const D: usize = 4;
         const N: usize = WINDOW / D;
         const HALF: usize = N / 2;
@@ -949,6 +949,611 @@ impl Effect for Autotune {
     live_set!();
 }
 
+// ------------------------------------------------------------------ biquads
+
+/// A second-order filter section (RBJ cookbook), direct form II transposed.
+#[derive(Clone, Copy)]
+struct Biquad {
+    b0: f32,
+    b1: f32,
+    b2: f32,
+    a1: f32,
+    a2: f32,
+    z1: f32,
+    z2: f32,
+}
+
+#[derive(Clone, Copy)]
+enum Shape {
+    LowPass,
+    HighPass,
+    LowShelf,
+    HighShelf,
+    Peak,
+}
+
+impl Biquad {
+    const OFF: Biquad = Biquad { b0: 1.0, b1: 0.0, b2: 0.0, a1: 0.0, a2: 0.0, z1: 0.0, z2: 0.0 };
+
+    fn new(shape: Shape, f: f32, q: f32, gain_db: f32, sr: f32) -> Self {
+        let mut b = Self::OFF;
+        b.set(shape, f, q, gain_db, sr);
+        b
+    }
+
+    /// Changes the response, keeping the filter state (so live edits don't click).
+    fn set(&mut self, shape: Shape, f: f32, q: f32, gain_db: f32, sr: f32) {
+        let f = f.clamp(10.0, sr * 0.45);
+        let w = TAU * f / sr;
+        let (sn, cs) = w.sin_cos();
+        let a = 10f32.powf(gain_db / 40.0);
+        let alpha = sn / (2.0 * q.max(0.05));
+        let (b0, b1, b2, a0, a1, a2) = match shape {
+            Shape::LowPass => ((1.0 - cs) / 2.0, 1.0 - cs, (1.0 - cs) / 2.0, 1.0 + alpha, -2.0 * cs, 1.0 - alpha),
+            Shape::HighPass => ((1.0 + cs) / 2.0, -(1.0 + cs), (1.0 + cs) / 2.0, 1.0 + alpha, -2.0 * cs, 1.0 - alpha),
+            Shape::Peak => (
+                1.0 + alpha * a,
+                -2.0 * cs,
+                1.0 - alpha * a,
+                1.0 + alpha / a,
+                -2.0 * cs,
+                1.0 - alpha / a,
+            ),
+            Shape::LowShelf => {
+                let t = 2.0 * a.sqrt() * alpha;
+                (
+                    a * ((a + 1.0) - (a - 1.0) * cs + t),
+                    2.0 * a * ((a - 1.0) - (a + 1.0) * cs),
+                    a * ((a + 1.0) - (a - 1.0) * cs - t),
+                    (a + 1.0) + (a - 1.0) * cs + t,
+                    -2.0 * ((a - 1.0) + (a + 1.0) * cs),
+                    (a + 1.0) + (a - 1.0) * cs - t,
+                )
+            }
+            Shape::HighShelf => {
+                let t = 2.0 * a.sqrt() * alpha;
+                (
+                    a * ((a + 1.0) + (a - 1.0) * cs + t),
+                    -2.0 * a * ((a - 1.0) + (a + 1.0) * cs),
+                    a * ((a + 1.0) + (a - 1.0) * cs - t),
+                    (a + 1.0) - (a - 1.0) * cs + t,
+                    2.0 * ((a - 1.0) - (a + 1.0) * cs),
+                    (a + 1.0) - (a - 1.0) * cs - t,
+                )
+            }
+        };
+        self.b0 = b0 / a0;
+        self.b1 = b1 / a0;
+        self.b2 = b2 / a0;
+        self.a1 = a1 / a0;
+        self.a2 = a2 / a0;
+    }
+
+    #[inline]
+    fn tick(&mut self, x: f32) -> f32 {
+        let y = self.b0 * x + self.z1;
+        self.z1 = self.b1 * x - self.a1 * y + self.z2;
+        self.z2 = self.b2 * x - self.a2 * y;
+        y
+    }
+}
+
+// -------------------------------------------------------------------- gate
+
+/// Noise gate: closes when the playing stops so hum and hiss disappear between notes.
+struct Gate {
+    spec: Spec,
+    sr: f32,
+    env: f32,
+    open: bool,
+    hold_left: usize,
+    gain: f32,
+    env_rel: f32,
+    thr: f32,
+    close_thr: f32,
+    att: f32,
+    rel: f32,
+    hold: usize,
+    floor: f32,
+}
+
+impl Gate {
+    fn new(spec: Spec, sr: f32) -> Self {
+        let mut s = Self {
+            spec,
+            sr,
+            env: 0.0,
+            open: false,
+            hold_left: 0,
+            gain: 0.0,
+            env_rel: coef(15.0, sr),
+            thr: 0.0,
+            close_thr: 0.0,
+            att: 0.0,
+            rel: 0.0,
+            hold: 0,
+            floor: 0.0,
+        };
+        s.configure();
+        s
+    }
+
+    fn configure(&mut self) {
+        self.thr = 10f32.powf(self.spec.num("threshold") / 20.0);
+        self.close_thr = self.thr * 0.7;
+        // "attack" is the time to fully open, "release" the time to fall by about 60 dB
+        self.att = coef(self.spec.num("attack") / 2.3, self.sr);
+        self.rel = coef(self.spec.num("release") / 6.9, self.sr);
+        self.hold = (self.spec.num("hold") * 0.001 * self.sr) as usize;
+        self.floor = 10f32.powf(self.spec.num("depth") / 20.0);
+    }
+}
+
+impl Effect for Gate {
+    fn process(&mut self, buf: &mut [f32]) {
+        for x in buf {
+            let a = x.abs();
+            self.env = if a > self.env { a } else { a + (self.env - a) * self.env_rel };
+            if !self.open {
+                if self.env > self.thr {
+                    self.open = true;
+                    self.hold_left = self.hold;
+                }
+            } else if self.env > self.close_thr {
+                self.hold_left = self.hold;
+            } else if self.hold_left > 0 {
+                self.hold_left -= 1;
+            } else {
+                self.open = false;
+            }
+            let target = if self.open { 1.0 } else { self.floor };
+            let k = if target > self.gain { self.att } else { self.rel };
+            self.gain = target + (self.gain - target) * k;
+            *x *= self.gain;
+        }
+    }
+    live_set!();
+}
+
+// ---------------------------------------------------------------------- eq
+
+/// Guitar EQ: low shelf, sweepable mid, high shelf, plus low-cut and high-cut filters.
+struct Eq {
+    spec: Spec,
+    sr: f32,
+    hp: Biquad,
+    low: Biquad,
+    mid: Biquad,
+    high: Biquad,
+    lp: Biquad,
+    use_hp: bool,
+    use_lp: bool,
+}
+
+impl Eq {
+    fn new(spec: Spec, sr: f32) -> Self {
+        let mut s = Self {
+            spec,
+            sr,
+            hp: Biquad::OFF,
+            low: Biquad::OFF,
+            mid: Biquad::OFF,
+            high: Biquad::OFF,
+            lp: Biquad::OFF,
+            use_hp: false,
+            use_lp: false,
+        };
+        s.configure();
+        s
+    }
+
+    fn configure(&mut self) {
+        let sp = &self.spec;
+        let lowcut = sp.num("lowcut");
+        self.use_hp = lowcut > 21.0;
+        self.hp.set(Shape::HighPass, lowcut, 0.707, 0.0, self.sr);
+        let highcut = sp.num("highcut");
+        self.use_lp = highcut < 19500.0;
+        self.lp.set(Shape::LowPass, highcut, 0.707, 0.0, self.sr);
+        self.low.set(Shape::LowShelf, 120.0, 0.8, sp.num("low"), self.sr);
+        self.mid.set(Shape::Peak, sp.num("mid-freq"), sp.num("mid-q"), sp.num("mid"), self.sr);
+        self.high.set(Shape::HighShelf, 4000.0, 0.8, sp.num("high"), self.sr);
+    }
+}
+
+impl Effect for Eq {
+    fn process(&mut self, buf: &mut [f32]) {
+        for x in buf {
+            let mut v = *x;
+            if self.use_hp {
+                v = self.hp.tick(v);
+            }
+            v = self.high.tick(self.mid.tick(self.low.tick(v)));
+            if self.use_lp {
+                v = self.lp.tick(v);
+            }
+            *x = v;
+        }
+    }
+    live_set!();
+}
+
+// --------------------------------------------------------------------- amp
+
+const HB_TAPS: usize = 31;
+
+/// 2x oversampling with a linear-phase half-band filter, so the clipping stages don't
+/// alias back into the audible range.
+struct Over2 {
+    h: [f32; HB_TAPS],
+    up_hist: [f32; HB_TAPS / 2 + 1],
+    down_hist: [f32; HB_TAPS],
+}
+
+impl Over2 {
+    fn new() -> Self {
+        let mut h = [0.0f32; HB_TAPS];
+        let c = (HB_TAPS / 2) as f32;
+        for (k, v) in h.iter_mut().enumerate() {
+            let t = k as f32 - c;
+            let sinc = if t == 0.0 { 1.0 } else { (PI * 0.5 * t).sin() / (PI * 0.5 * t) };
+            let w = 0.42 - 0.5 * (TAU * k as f32 / (HB_TAPS - 1) as f32).cos()
+                + 0.08 * (2.0 * TAU * k as f32 / (HB_TAPS - 1) as f32).cos();
+            *v = 0.5 * sinc * w;
+        }
+        let sum: f32 = h.iter().sum();
+        h.iter_mut().for_each(|v| *v /= sum);
+        Self { h, up_hist: [0.0; HB_TAPS / 2 + 1], down_hist: [0.0; HB_TAPS] }
+    }
+
+    /// One input sample becomes two at the doubled rate.
+    fn up(&mut self, x: f32) -> [f32; 2] {
+        self.up_hist.rotate_right(1);
+        self.up_hist[0] = x;
+        let mut even = 0.0;
+        let mut odd = 0.0;
+        for (m, xv) in self.up_hist.iter().enumerate() {
+            even += self.h[2 * m] * xv;
+            if 2 * m + 1 < HB_TAPS {
+                odd += self.h[2 * m + 1] * xv;
+            }
+        }
+        [2.0 * even, 2.0 * odd]
+    }
+
+    /// Two samples at the doubled rate become one.
+    fn down(&mut self, pair: [f32; 2]) -> f32 {
+        let mut out = 0.0;
+        for z in pair {
+            self.down_hist.rotate_right(1);
+            self.down_hist[0] = z;
+            out = self.h.iter().zip(&self.down_hist).map(|(a, b)| a * b).sum();
+        }
+        out
+    }
+}
+
+struct Voicing {
+    stages: usize,
+    max_gain: f32,
+    bias: f32,
+    coupling_hz: f32,
+    stage_lp_hz: f32,
+    bass_hz: f32,
+    mid_hz: f32,
+    mid_q: f32,
+    treble_hz: f32,
+    mid_db: f32,
+    power: f32,
+    fizz_hz: f32,
+    out: f32,
+}
+
+fn voicing(model: &str) -> Voicing {
+    match model {
+        "clean" => Voicing { stages: 1, max_gain: 7.0, bias: 0.05, coupling_hz: 30.0, stage_lp_hz: 9000.0, bass_hz: 100.0, mid_hz: 500.0, mid_q: 0.7, treble_hz: 3000.0, mid_db: 6.0, power: 0.6, fizz_hz: 10000.0, out: 0.9 },
+        "crunch" => Voicing { stages: 2, max_gain: 60.0, bias: 0.12, coupling_hz: 60.0, stage_lp_hz: 7000.0, bass_hz: 110.0, mid_hz: 650.0, mid_q: 0.8, treble_hz: 2800.0, mid_db: 8.0, power: 1.0, fizz_hz: 8000.0, out: 0.7 },
+        "brit" => Voicing { stages: 3, max_gain: 250.0, bias: 0.15, coupling_hz: 80.0, stage_lp_hz: 6500.0, bass_hz: 120.0, mid_hz: 700.0, mid_q: 0.9, treble_hz: 2600.0, mid_db: 9.0, power: 1.2, fizz_hz: 7000.0, out: 0.55 },
+        "lead" => Voicing { stages: 3, max_gain: 700.0, bias: 0.2, coupling_hz: 100.0, stage_lp_hz: 5500.0, bass_hz: 120.0, mid_hz: 800.0, mid_q: 1.0, treble_hz: 2500.0, mid_db: 10.0, power: 1.2, fizz_hz: 6000.0, out: 0.5 },
+        _ => Voicing { stages: 4, max_gain: 1500.0, bias: 0.25, coupling_hz: 140.0, stage_lp_hz: 5000.0, bass_hz: 100.0, mid_hz: 550.0, mid_q: 0.9, treble_hz: 2400.0, mid_db: -10.0, power: 1.1, fizz_hz: 5500.0, out: 0.5 },
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct StageState {
+    lp: f32,
+    hp_x: f32,
+    hp_y: f32,
+}
+
+/// Tube-style amp: input filter, cascaded asymmetric clipping stages with coupling
+/// filters, a three-band tone stack, a driven power stage, presence and a fizz filter,
+/// all at 2x oversampling. The `model` picks the voicing: how many stages, how much gain,
+/// where the mid sits. It is a modelled approximation, not a capture of any real amp;
+/// put a Cabinet after it.
+struct Amp {
+    spec: Spec,
+    sr2: f32,
+    over: Over2,
+    v: Voicing,
+    hp_in_x: f32,
+    hp_in_y: f32,
+    stages: [StageState; 4],
+    k_stage: f32,
+    bass: Biquad,
+    mid: Biquad,
+    treble: Biquad,
+    presence: Biquad,
+    fizz: Biquad,
+    fizz2: Biquad,
+    power_k: f32,
+    level: f32,
+    dc_x: f32,
+    dc_y: f32,
+    lp_k: f32,
+    hp_k: f32,
+    in_hp_k: f32,
+}
+
+impl Amp {
+    fn new(spec: Spec, sr: f32) -> Self {
+        let mut s = Self {
+            spec,
+            sr2: sr * 2.0,
+            over: Over2::new(),
+            v: voicing("crunch"),
+            hp_in_x: 0.0,
+            hp_in_y: 0.0,
+            stages: [StageState::default(); 4],
+            k_stage: 1.0,
+            bass: Biquad::OFF,
+            mid: Biquad::OFF,
+            treble: Biquad::OFF,
+            presence: Biquad::OFF,
+            fizz: Biquad::OFF,
+            fizz2: Biquad::OFF,
+            power_k: 1.0,
+            level: 1.0,
+            dc_x: 0.0,
+            dc_y: 0.0,
+            lp_k: 0.0,
+            hp_k: 0.0,
+            in_hp_k: 0.0,
+        };
+        s.configure();
+        s
+    }
+
+    fn configure(&mut self) {
+        let sp = &self.spec;
+        let v = voicing(sp.option("model"));
+        let sr2 = self.sr2;
+        let gain = sp.num("gain");
+        let total = 1.0 + gain * gain * v.max_gain;
+        self.k_stage = total.powf(1.0 / v.stages as f32);
+        self.lp_k = one_pole(v.stage_lp_hz, sr2);
+        self.hp_k = (-TAU * v.coupling_hz / sr2).exp();
+        self.in_hp_k = (-TAU * (v.coupling_hz * 0.8) / sr2).exp();
+        let tone = |x: f32, range: f32| (x - 0.5) * 2.0 * range;
+        self.bass.set(Shape::LowShelf, v.bass_hz, 0.7, tone(sp.num("bass"), 12.0), sr2);
+        let mid_db = if v.mid_db >= 0.0 { tone(sp.num("mid"), v.mid_db) } else { v.mid_db + tone(sp.num("mid"), 8.0).max(-6.0) * 1.0 };
+        self.mid.set(Shape::Peak, v.mid_hz, v.mid_q, mid_db, sr2);
+        self.treble.set(Shape::HighShelf, v.treble_hz, 0.7, tone(sp.num("treble"), 12.0), sr2);
+        self.presence.set(Shape::HighShelf, 4200.0, 0.7, sp.num("presence") * 9.0, sr2);
+        self.fizz.set(Shape::LowPass, v.fizz_hz, 0.7, 0.0, sr2);
+        self.fizz2.set(Shape::LowPass, v.fizz_hz * 1.2, 0.6, 0.0, sr2);
+        self.power_k = (0.4 + sp.num("master") * 3.0) * v.power;
+        self.level = sp.num("level") * v.out;
+        self.v = v;
+    }
+
+    #[inline]
+    fn core(&mut self, x: f32) -> f32 {
+        let mut y = x;
+        let n = self.v.stages;
+        for i in 0..n {
+            let st = &mut self.stages[i];
+            let bias = self.v.bias * if i % 2 == 0 { 1.0 } else { -0.6 };
+            let driven = (y * self.k_stage + bias).tanh() - bias.tanh();
+            st.lp += self.lp_k * (driven - st.lp);
+            // coupling capacitor: one-pole high-pass
+            let hp = self.hp_k * (st.hp_y + st.lp - st.hp_x);
+            st.hp_x = st.lp;
+            st.hp_y = hp;
+            y = hp;
+        }
+        y = self.treble.tick(self.mid.tick(self.bass.tick(y)));
+        y = (y * self.power_k).tanh() / self.power_k.max(1.0).sqrt();
+        y = self.presence.tick(y);
+        self.fizz2.tick(self.fizz.tick(y))
+    }
+}
+
+impl Effect for Amp {
+    fn process(&mut self, buf: &mut [f32]) {
+        for x in buf {
+            // input high-pass keeps rumble out of the gain stages
+            let hp = self.in_hp_k * (self.hp_in_y + *x - self.hp_in_x);
+            self.hp_in_x = *x;
+            self.hp_in_y = hp;
+            let up = self.over.up(hp);
+            let mut pair = [0.0; 2];
+            for (o, u) in pair.iter_mut().zip(up) {
+                *o = self.core(u);
+            }
+            let y = self.over.down(pair) * self.level;
+            // final DC block
+            let dc = y - self.dc_x + 0.995 * self.dc_y;
+            self.dc_x = y;
+            self.dc_y = dc;
+            *x = dc.clamp(-1.5, 1.5);
+        }
+    }
+    live_set!();
+}
+
+// ----------------------------------------------------------------- cabinet
+
+/// Built-in cabinet impulse responses, synthesised from filters (no recordings): a
+/// high-pass and a speaker-cone resonance at the bottom, a presence peak, a steep
+/// roll-off at the top and a short baffle reflection. Use the `ir` parameter to load a
+/// real impulse response instead.
+fn builtin_ir(cab: &str, sr: f32) -> Vec<f32> {
+    let (lo, res, res_db, pres, pres_db, hi, orders, refl_ms, refl) = match cab {
+        "2x12" => (75.0, 100.0, 3.0, 2500.0, 3.0, 5000.0, 2, 0.9, 0.2),
+        "4x12" => (70.0, 95.0, 5.0, 2200.0, 5.0, 4600.0, 3, 1.2, 0.25),
+        "1x8-vintage" => (140.0, 180.0, 5.0, 3200.0, 6.0, 4200.0, 2, 0.5, 0.15),
+        _ => (80.0, 110.0, 4.0, 2800.0, 4.0, 5200.0, 2, 0.7, 0.25),
+    };
+    let n = (0.1 * sr) as usize;
+    let mut hp = Biquad::new(Shape::HighPass, lo, 0.8, 0.0, sr);
+    let mut r = Biquad::new(Shape::Peak, res, 1.2, res_db, sr);
+    let mut p = Biquad::new(Shape::Peak, pres, 1.0, pres_db, sr);
+    let mut lps: Vec<Biquad> = (0..orders).map(|_| Biquad::new(Shape::LowPass, hi, 0.707, 0.0, sr)).collect();
+    let mut h: Vec<f32> = (0..n)
+        .map(|i| {
+            let mut v = hp.tick(if i == 0 { 1.0 } else { 0.0 });
+            v = p.tick(r.tick(v));
+            for l in &mut lps {
+                v = l.tick(v);
+            }
+            v
+        })
+        .collect();
+    let d = (refl_ms * 0.001 * sr) as usize;
+    for i in (d..n).rev() {
+        h[i] -= refl * h[i - d];
+    }
+    h
+}
+
+/// Reads a WAV impulse response (mono mix, resampled to `sr`). The name is a path or a
+/// file in the `ir` folder of the config directory.
+pub fn load_ir(name: &str, sr: f32) -> Result<Vec<f32>, String> {
+    let direct = std::path::PathBuf::from(name);
+    let path = if direct.is_absolute() || direct.exists() {
+        direct
+    } else {
+        let mut p = crate::paths::ir_dir().join(name);
+        if p.extension().is_none() {
+            p.set_extension("wav");
+        }
+        p
+    };
+    let mut reader = hound::WavReader::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let spec = reader.spec();
+    let ch = spec.channels as usize;
+    let raw: Vec<f32> = match spec.sample_format {
+        hound::SampleFormat::Float => reader.samples::<f32>().collect::<Result<_, _>>().map_err(|e| e.to_string())?,
+        hound::SampleFormat::Int => {
+            let scale = (1u64 << (spec.bits_per_sample - 1)) as f32;
+            reader.samples::<i32>().map(|s| s.map(|v| v as f32 / scale)).collect::<Result<_, _>>().map_err(|e| e.to_string())?
+        }
+    };
+    let mono: Vec<f32> = raw.chunks(ch).map(|f| f.iter().sum::<f32>() / ch as f32).collect();
+    if mono.is_empty() {
+        return Err(format!("{}: empty file", path.display()));
+    }
+    if spec.sample_rate as f32 == sr {
+        return Ok(mono);
+    }
+    let ratio = spec.sample_rate as f32 / sr;
+    let n = (mono.len() as f32 / ratio) as usize;
+    Ok((0..n)
+        .map(|i| {
+            let p = i as f32 * ratio;
+            let k = p as usize;
+            let f = p - k as f32;
+            mono[k] * (1.0 - f) + mono[(k + 1).min(mono.len() - 1)] * f
+        })
+        .collect())
+}
+
+/// Convolves the signal with a cabinet impulse response (direct form, a few thousand
+/// taps: cheap enough for a 64-frame live buffer).
+struct Cabinet {
+    spec: Spec,
+    h_rev: Vec<f32>,
+    ring: Vec<f32>,
+    pos: usize,
+    mix: f32,
+    level: f32,
+}
+
+impl Cabinet {
+    fn new(spec: Spec, sr: f32) -> Self {
+        let mut h = match spec.text("ir") {
+            "" => builtin_ir(spec.option("cab"), sr),
+            name => load_ir(name, sr).unwrap_or_else(|e| {
+                eprintln!("cabinet: {e}; using the built-in cabinet");
+                builtin_ir(spec.option("cab"), sr)
+            }),
+        };
+        // keep the first `trim` ms, fading the last fifth out, and match the energy of the input
+        let keep = ((spec.num("trim") * 0.001 * sr) as usize).clamp(16, h.len().max(16));
+        h.truncate(keep);
+        let fade = keep / 5;
+        for i in 0..fade {
+            let g = 0.5 + 0.5 * (PI * i as f32 / fade as f32).cos();
+            let at = keep - fade + i;
+            if at < h.len() {
+                h[at] *= g;
+            }
+        }
+        // unity gain across the guitar's midrange (mean response at a few spot frequencies)
+        let spots = [150.0f32, 300.0, 600.0, 1200.0, 2400.0];
+        let gain = spots
+            .iter()
+            .map(|f| {
+                let w = TAU * f / sr;
+                let (re, im) = h.iter().enumerate().fold((0.0f32, 0.0f32), |(re, im), (n, v)| {
+                    (re + v * (w * n as f32).cos(), im - v * (w * n as f32).sin())
+                });
+                (re * re + im * im).sqrt()
+            })
+            .sum::<f32>()
+            / spots.len() as f32;
+        h.iter_mut().for_each(|v| *v /= gain.max(1e-6));
+        h.reverse();
+        let len = h.len();
+        let mut s = Self { spec, h_rev: h, ring: vec![0.0; len * 2], pos: 0, mix: 1.0, level: 1.0 };
+        s.configure();
+        s
+    }
+
+    fn configure(&mut self) {
+        self.mix = self.spec.num("mix");
+        self.level = 10f32.powf(self.spec.num("level") / 20.0);
+    }
+}
+
+fn dot(a: &[f32], b: &[f32]) -> f32 {
+    let mut acc = [0.0f32; 8];
+    let (ca, cb) = (a.chunks_exact(8), b.chunks_exact(8));
+    let tail: f32 = ca.remainder().iter().zip(cb.remainder()).map(|(x, y)| x * y).sum();
+    for (x, y) in ca.zip(cb) {
+        for k in 0..8 {
+            acc[k] += x[k] * y[k];
+        }
+    }
+    acc.iter().sum::<f32>() + tail
+}
+
+impl Effect for Cabinet {
+    fn process(&mut self, buf: &mut [f32]) {
+        let n = self.h_rev.len();
+        for x in buf {
+            self.ring[self.pos] = *x;
+            self.ring[self.pos + n] = *x;
+            let wet = dot(&self.ring[self.pos + 1..self.pos + 1 + n], &self.h_rev) * self.level;
+            self.pos = (self.pos + 1) % n;
+            *x += (wet - *x) * self.mix;
+        }
+    }
+    live_set!();
+}
+
+
 // ------------------------------------------------- experimental and zen effects
 
 /// Cheap white noise in -1..1.
@@ -960,55 +1565,6 @@ impl Noise {
         self.0 ^= self.0 >> 17;
         self.0 ^= self.0 << 5;
         self.0 as f32 / u32::MAX as f32 * 2.0 - 1.0
-    }
-}
-
-/// Spots the moment a string is picked: a fast envelope jumping above a slow one.
-struct Onset {
-    fast: f32,
-    slow: f32,
-    hold: usize,
-    hold_len: usize,
-    ratio: f32,
-    fa: f32,
-    fr: f32,
-    sa: f32,
-    sr_: f32,
-}
-
-impl Onset {
-    fn new(sr: f32) -> Self {
-        Self {
-            fast: 0.0,
-            slow: 0.0,
-            hold: 0,
-            hold_len: (0.08 * sr) as usize,
-            ratio: 2.2,
-            fa: coef(0.5, sr),
-            fr: coef(8.0, sr),
-            sa: coef(30.0, sr),
-            sr_: coef(150.0, sr),
-        }
-    }
-
-    fn set_sensitivity(&mut self, s: f32) {
-        self.ratio = 3.0 - 1.6 * s.clamp(0.0, 1.0);
-    }
-
-    /// Returns the level when a note is picked at this sample.
-    fn tick(&mut self, x: f32) -> Option<f32> {
-        let a = x.abs();
-        self.fast = a + (self.fast - a) * if a > self.fast { self.fa } else { self.fr };
-        self.slow = a + (self.slow - a) * if a > self.slow { self.sa } else { self.sr_ };
-        if self.hold > 0 {
-            self.hold -= 1;
-            return None;
-        }
-        if self.fast > self.slow * self.ratio + 0.004 && self.fast > 0.02 {
-            self.hold = self.hold_len;
-            return Some(self.fast);
-        }
-        None
     }
 }
 
@@ -1072,215 +1628,6 @@ impl Effect for Transient {
             let target = (self.amount * d).exp().clamp(0.0, 4.0);
             self.gain = target + (self.gain - target) * self.gk;
             *x += (*x * self.gain - *x) * self.mix;
-        }
-    }
-    live_set!();
-}
-
-// ------------------------------------------------------------------ freeze
-
-#[derive(Clone, Copy, PartialEq)]
-enum Phase {
-    Idle,
-    Settle(usize),
-    Record(usize),
-    Play,
-}
-
-/// Prolonger: after each pick, waits for the attack to pass, samples one cycle (a whole
-/// number of detected periods) and loops it under the dry sound until the next pick.
-struct Freeze {
-    spec: Spec,
-    sr: f32,
-    onset: Onset,
-    tracker: PitchTracker,
-    buf: Vec<f32>,
-    n: usize,
-    xf: usize,
-    phase: Phase,
-    pos: usize,
-    fade: f32,
-    env: f32,
-    mix: f32,
-    decay: f32,
-    settle: usize,
-    length: f32,
-}
-
-impl Freeze {
-    fn new(spec: Spec, sr: f32) -> Self {
-        let mut s = Self {
-            spec,
-            sr,
-            onset: Onset::new(sr),
-            tracker: PitchTracker::new(sr),
-            buf: vec![0.0; (0.5 * sr) as usize],
-            n: 1,
-            xf: 1,
-            phase: Phase::Idle,
-            pos: 0,
-            fade: 0.0,
-            env: 0.0,
-            mix: 0.0,
-            decay: 1.0,
-            settle: 0,
-            length: 0.0,
-        };
-        s.configure();
-        s
-    }
-
-    fn configure(&mut self) {
-        self.mix = self.spec.num("mix");
-        self.decay = (-1.0 / (self.spec.num("sustain") * self.sr)).exp();
-        self.settle = (self.spec.num("settle") * 0.001 * self.sr) as usize;
-        self.length = self.spec.num("length") * 0.001 * self.sr;
-        self.onset.set_sensitivity(self.spec.num("sensitivity"));
-    }
-
-    fn start_recording(&mut self) {
-        let cap = self.buf.len();
-        let mut n = self.length;
-        if let Some(f0) = self.tracker.detect() {
-            let period = self.sr / f0;
-            n = (self.length / period).round().max(1.0) * period;
-        }
-        self.xf = ((0.002 * self.sr) as usize).max(8);
-        self.n = (n.round() as usize).clamp(64, cap - self.xf - 1);
-        self.xf = self.xf.min(self.n / 4);
-    }
-}
-
-impl Effect for Freeze {
-    fn process(&mut self, buf: &mut [f32]) {
-        self.tracker.push(buf);
-        let down = 1.0 / (0.008 * self.sr);
-        for x in buf {
-            let dry = *x;
-            if self.onset.tick(dry).is_some() {
-                self.phase = Phase::Settle(self.settle);
-            }
-            match self.phase {
-                Phase::Settle(0) => {
-                    self.start_recording();
-                    self.phase = Phase::Record(0);
-                }
-                Phase::Settle(c) => self.phase = Phase::Settle(c - 1),
-                Phase::Record(i) => {
-                    self.buf[i] = dry;
-                    self.phase = if i + 1 >= self.n + self.xf {
-                        self.pos = 0;
-                        self.env = 1.0;
-                        Phase::Play
-                    } else {
-                        Phase::Record(i + 1)
-                    };
-                }
-                _ => {}
-            }
-            let playing = self.phase == Phase::Play;
-            self.fade = if playing { (self.fade + down * 2.0).min(1.0) } else { (self.fade - down).max(0.0) };
-            if self.fade > 0.0 {
-                let p = self.pos;
-                let s = if p < self.xf {
-                    let w = p as f32 / self.xf as f32;
-                    self.buf[p] * w + self.buf[p + self.n] * (1.0 - w)
-                } else {
-                    self.buf[p]
-                };
-                *x = dry + s * self.mix * self.fade * self.env;
-                self.env *= self.decay;
-                self.pos = if p + 1 >= self.n { 0 } else { p + 1 };
-            }
-        }
-    }
-    live_set!();
-}
-
-// -------------------------------------------------------------- pick noise
-
-/// White noise on the picked note: a short burst at each pick, or noise riding the
-/// note's own envelope.
-struct PickNoise {
-    spec: Spec,
-    sr: f32,
-    onset: Onset,
-    rng: Noise,
-    burst: f32,
-    lvl: f32,
-    since: usize,
-    follow: f32,
-    lp: f32,
-    amount: f32,
-    decay_k: f32,
-    release_k: f32,
-    tone_k: f32,
-    comp: f32,
-    follow_mode: bool,
-}
-
-impl PickNoise {
-    fn new(spec: Spec, sr: f32) -> Self {
-        let mut s = Self {
-            spec,
-            sr,
-            onset: Onset::new(sr),
-            rng: Noise(0x9E37_79B9),
-            burst: 0.0,
-            lvl: 0.0,
-            since: usize::MAX,
-            follow: 0.0,
-            lp: 0.0,
-            amount: 0.0,
-            decay_k: 0.0,
-            release_k: 0.0,
-            tone_k: 1.0,
-            comp: 1.0,
-            follow_mode: false,
-        };
-        s.configure();
-        s
-    }
-
-    fn configure(&mut self) {
-        self.amount = self.spec.num("amount");
-        let ms = self.spec.num("decay");
-        self.decay_k = coef(ms, self.sr);
-        self.release_k = coef(ms, self.sr);
-        let tone = self.spec.num("tone");
-        if tone >= 0.99 {
-            self.tone_k = 1.0;
-            self.comp = 1.0;
-        } else {
-            self.tone_k = one_pole(200.0 * (15000.0f32 / 200.0).powf(tone), self.sr);
-            self.comp = ((2.0 - self.tone_k) / self.tone_k).sqrt();
-        }
-        self.follow_mode = self.spec.option("mode") == "follow";
-        self.onset.set_sensitivity(self.spec.num("sensitivity"));
-    }
-}
-
-impl Effect for PickNoise {
-    fn process(&mut self, buf: &mut [f32]) {
-        for x in buf {
-            let dry = *x;
-            if let Some(l) = self.onset.tick(dry) {
-                self.burst = 1.0;
-                self.lvl = l;
-                self.since = 0;
-            }
-            if self.since < (0.015 * self.sr) as usize {
-                self.lvl = self.lvl.max(self.onset.fast);
-                self.since += 1;
-            }
-            let a = dry.abs();
-            self.follow = if a > self.follow { a } else { a + (self.follow - a) * self.release_k };
-            let amp = if self.follow_mode { self.follow } else { self.burst * self.lvl };
-            self.burst *= self.decay_k;
-            let white = self.rng.next();
-            self.lp += self.tone_k * (white - self.lp);
-            let noise = if self.tone_k >= 1.0 { white } else { self.lp * self.comp };
-            *x = dry + noise * amp * self.amount * 2.0;
         }
     }
     live_set!();
@@ -1415,99 +1762,6 @@ impl Effect for Reverse {
     live_set!();
 }
 
-// ----------------------------------------------------------------- kalimba
-
-#[derive(Clone, Copy, Default)]
-struct Tine {
-    ph: f32,
-    inc: f32,
-    amp: f32,
-    age: usize,
-}
-
-/// Turns each picked note into a kalimba tine: the pitch is tracked and a plucked,
-/// slightly inharmonic metal tone is played at it (optionally octaves up).
-struct Kalimba {
-    spec: Spec,
-    sr: f32,
-    onset: Onset,
-    tracker: PitchTracker,
-    pending: Option<(usize, f32)>,
-    tines: [Tine; 8],
-    mix: f32,
-    dry: f32,
-    octave: f32,
-    k_main: f32,
-    k_over: f32,
-}
-
-impl Kalimba {
-    fn new(spec: Spec, sr: f32) -> Self {
-        let mut s = Self {
-            spec,
-            sr,
-            onset: Onset::new(sr),
-            tracker: PitchTracker::new(sr),
-            pending: None,
-            tines: [Tine::default(); 8],
-            mix: 0.0,
-            dry: 1.0,
-            octave: 1.0,
-            k_main: 0.0,
-            k_over: 0.0,
-        };
-        s.configure();
-        s
-    }
-
-    fn configure(&mut self) {
-        self.mix = self.spec.num("mix");
-        self.dry = self.spec.num("dry");
-        self.octave = self.spec.num("octave").round();
-        let ms = self.spec.num("decay");
-        self.k_main = coef(ms, self.sr);
-        self.k_over = coef(ms * 0.12, self.sr);
-        self.onset.set_sensitivity(self.spec.num("sensitivity"));
-    }
-}
-
-impl Effect for Kalimba {
-    fn process(&mut self, buf: &mut [f32]) {
-        self.tracker.push(buf);
-        for x in buf {
-            let dry = *x;
-            if let Some(l) = self.onset.tick(dry) {
-                self.pending = Some(((0.035 * self.sr) as usize, l));
-            }
-            if let Some((c, l)) = self.pending {
-                if c == 0 {
-                    self.pending = None;
-                    if let Some(f0) = self.tracker.detect() {
-                        let f = (f0 * 2f32.powf(self.octave)).min(4000.0);
-                        let i = (0..8).min_by_key(|&i| if self.tines[i].amp < 1e-4 { 0 } else { 1 + self.tines[i].age.min(1 << 30) as i64 * -1 }).unwrap_or(0);
-                        self.tines[i] = Tine { ph: 0.0, inc: f / self.sr, amp: (l * 3.0).clamp(0.05, 0.9), age: 0 };
-                    }
-                } else {
-                    self.pending = Some((c - 1, l));
-                }
-            }
-            let mut out = 0.0;
-            for t in &mut self.tines {
-                if t.amp < 1e-5 {
-                    continue;
-                }
-                t.ph = (t.ph + t.inc).fract();
-                let over = (TAU * t.ph * 5.4).sin() * 0.3 * (self.k_over.powi(t.age.min(1 << 20) as i32));
-                out += t.amp * ((TAU * t.ph).sin() + over);
-                t.amp *= self.k_main;
-                t.age += 1;
-            }
-            *x = dry * self.dry + out * self.mix;
-        }
-    }
-    live_set!();
-}
-
 // -------------------------------------------------------------------- wind
 
 /// Ethereal wind: noise through two slowly drifting resonant band-passes, breathing
@@ -1581,59 +1835,6 @@ impl Effect for Wind {
                 wind += st[1];
             }
             *x = dry + wind * amp * self.mix * 0.35 * self.q.sqrt();
-        }
-    }
-    live_set!();
-}
-
-// ------------------------------------------------------------------- swell
-
-/// Volume swell: each pick fades in slowly, like a bowed or pad-like note.
-struct Swell {
-    spec: Spec,
-    sr: f32,
-    onset: Onset,
-    gain: f32,
-    down: bool,
-    t: usize,
-    rise: usize,
-}
-
-impl Swell {
-    fn new(spec: Spec, sr: f32) -> Self {
-        let mut s = Self { spec, sr, onset: Onset::new(sr), gain: 1.0, down: false, t: usize::MAX, rise: 1 };
-        s.configure();
-        s
-    }
-
-    fn configure(&mut self) {
-        self.rise = ((self.spec.num("rise") * 0.001 * self.sr) as usize).max(1);
-        self.onset.set_sensitivity(self.spec.num("sensitivity"));
-    }
-}
-
-impl Effect for Swell {
-    fn process(&mut self, buf: &mut [f32]) {
-        let dn = 1.0 / (0.002 * self.sr);
-        for x in buf {
-            if self.onset.tick(*x).is_some() {
-                self.down = true;
-            }
-            if self.down {
-                self.gain -= dn;
-                if self.gain <= 0.0 {
-                    self.gain = 0.0;
-                    self.down = false;
-                    self.t = 0;
-                }
-            } else if self.t < self.rise {
-                self.t += 1;
-                let u = self.t as f32 / self.rise as f32;
-                self.gain = u * u * (3.0 - 2.0 * u);
-            } else {
-                self.gain = 1.0;
-            }
-            *x *= self.gain;
         }
     }
     live_set!();
@@ -1791,6 +1992,7 @@ mod tests {
                     let v = match p.kind {
                         Kind::Num { min, max, .. } | Kind::AutoNum { min, max, .. } => Value::Num(min + (max - min) * t),
                         Kind::Choice { options, .. } => Value::Choice(step % options.len()),
+                        Kind::Text { default } => Value::Text(default),
                     };
                     fx.set(p.key, v);
                 }
@@ -1820,61 +2022,12 @@ mod tests {
     }
 
     #[test]
-    fn freeze_sustains_after_the_note_dies() {
-        let input = pluck(196.0, 0.1, 0.5, 3.0);
-        let dry = rms_range(&input, 1.5, 2.5);
-        let out = run_chain(&[("freeze", "mix=1,sustain=20")], &input);
-        assert!(dry < 1e-6);
-        assert!(rms_range(&out, 1.5, 2.5) > 0.03, "loop should keep sounding");
-        let hz = measure(&out[(1.0 * SR) as usize..(3.0 * SR) as usize]);
-        assert!((hz / 196.0 - 1.0).abs() < 0.03, "loop pitch {hz}");
-    }
-
-    #[test]
-    fn freeze_restarts_on_the_next_pick() {
-        let mut input = pluck(196.0, 0.1, 0.5, 4.0);
-        let second = pluck(294.0, 2.0, 0.5, 4.0);
-        input.iter_mut().zip(&second).for_each(|(a, b)| *a += b);
-        let out = run_chain(&[("freeze", "mix=1,sustain=30")], &input);
-        let hz = measure(&out[(3.2 * SR) as usize..(4.0 * SR) as usize]);
-        assert!((hz / 294.0 - 1.0).abs() < 0.03, "after the second pick the loop follows it: {hz}");
-    }
-
-    #[test]
-    fn pick_noise_adds_a_burst_at_the_pick() {
-        let input = pluck(196.0, 0.3, 0.05, 1.0);
-        let with = run_chain(&[("pick-noise", "amount=1,decay=100")], &input);
-        let without = run_chain(&[("pick-noise", "amount=0")], &input);
-        let diff: Vec<f32> = with.iter().zip(&without).map(|(a, b)| a - b).collect();
-        assert!(rms_range(&diff, 0.3, 0.4) > 0.005, "noise at the pick");
-        assert!(rms_range(&diff, 0.0, 0.25) < 1e-6, "none before it");
-    }
-
-    #[test]
     fn bitcrusher_quantises() {
         let out = run_chain(&[("bitcrusher", "bits=2,rate=48000")], &sine(220.0, 0.2));
         let mut distinct: Vec<i32> = out.iter().map(|v| (v * 1000.0).round() as i32).collect();
         distinct.sort();
         distinct.dedup();
         assert!(distinct.len() <= 5, "{} levels", distinct.len());
-    }
-
-    #[test]
-    fn kalimba_plays_a_tine_at_the_note() {
-        let input = pluck(196.0, 0.1, 0.4, 2.0);
-        let out = run_chain(&[("kalimba", "mix=1,dry=0,octave=1")], &input);
-        assert!(rms_range(&out, 0.3, 0.8) > 0.01, "a tine sounds");
-        let hz = measure(&out[(0.3 * SR) as usize..(1.0 * SR) as usize]);
-        assert!((hz / 392.0 - 1.0).abs() < 0.08, "an octave up, got {hz}");
-    }
-
-    #[test]
-    fn swell_fades_each_pick_in() {
-        let input: Vec<f32> = (0..(SR * 1.0) as usize)
-            .map(|n| if n as f32 / SR >= 0.2 { 0.4 * (TAU * 196.0 * n as f32 / SR).sin() } else { 0.0 })
-            .collect();
-        let out = run_chain(&[("swell", "rise=500")], &input);
-        assert!(rms_range(&out, 0.2, 0.25) < rms_range(&out, 0.8, 0.9) * 0.3);
     }
 
     #[test]
@@ -1902,6 +2055,75 @@ mod tests {
         assert!(peak(&soft) < peak(&flat) * 0.8, "{} vs {}", peak(&soft), peak(&flat));
         let (a, b) = (rms_range(&soft, 0.5, 0.7), rms_range(&flat, 0.5, 0.7));
         assert!((a / b - 1.0).abs() < 0.1, "sustain untouched: {a} vs {b}");
+    }
+
+    fn rms(x: &[f32]) -> f32 {
+        (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt()
+    }
+
+    #[test]
+    fn gate_silences_noise_and_passes_notes() {
+        let mut input: Vec<f32> = (0..(SR * 1.0) as usize).map(|n| 0.003 * (n as f32 * 12.9898).sin()).collect();
+        for n in 0..(SR * 0.3) as usize {
+            input[n + 4800] += 0.4 * (TAU * 196.0 * n as f32 / SR).sin();
+        }
+        let out = run_chain(&[("gate", "threshold=-45")], &input);
+        assert!(rms_range(&out, 0.2, 0.35) > 0.2, "note passes");
+        assert!(rms_range(&out, 0.7, 0.95) < rms_range(&input, 0.7, 0.95) * 0.05, "hiss is gated");
+    }
+
+    #[test]
+    fn eq_boosts_and_cuts_where_asked() {
+        let level = |spec: &str, hz: f32| rms(&run_chain(&[("eq", spec)], &sine(hz, 0.5))[(SR * 0.2) as usize..]);
+        let flat = rms(&sine(1000.0, 0.5)[(SR * 0.2) as usize..]);
+        assert!((level("", 1000.0) / flat - 1.0).abs() < 0.02);
+        assert!(level("mid=12,mid-freq=1000", 1000.0) > flat * 3.0);
+        assert!(level("mid=-12,mid-freq=1000", 1000.0) < flat * 0.3);
+        assert!(level("low=12", 60.0) > rms(&sine(60.0, 0.5)[(SR * 0.2) as usize..]) * 2.5);
+        assert!(level("high=-12", 8000.0) < rms(&sine(8000.0, 0.5)[(SR * 0.2) as usize..]) * 0.4);
+        assert!(level("lowcut=300", 60.0) < rms(&sine(60.0, 0.5)[(SR * 0.2) as usize..]) * 0.1);
+    }
+
+    #[test]
+    fn amps_are_bounded_louder_when_driven_and_keep_the_pitch() {
+        for model in ["clean", "crunch", "brit", "lead", "modern"] {
+            let quiet = run_chain(&[("amp", &format!("model={model},gain=0.1"))], &sine(196.0, 1.0));
+            let hot = run_chain(&[("amp", &format!("model={model},gain=1"))], &sine(196.0, 1.0));
+            let (q, h) = (rms(&quiet[24000..]), rms(&hot[24000..]));
+            println!("{model}: gain0.1 rms {q:.3}  gain1 rms {h:.3} peak {:.2}", hot.iter().fold(0.0f32, |m, v| m.max(v.abs())));
+            assert!(hot.iter().all(|v| v.is_finite() && v.abs() <= 1.5), "{model} bounded");
+            assert!(h > 0.03, "{model} audible");
+            let hz = measure(&hot);
+            assert!((hz / 196.0 - 1.0).abs() < 0.03, "{model} pitch {hz}");
+            assert!(h > q * 0.8, "{model}: more gain is not quieter");
+        }
+    }
+
+    #[test]
+    fn cabinet_filters_highs_and_falls_back_when_the_file_is_missing() {
+        let low = rms(&run_chain(&[("cabinet", "")], &sine(200.0, 0.5))[(SR * 0.2) as usize..]);
+        let high = rms(&run_chain(&[("cabinet", "")], &sine(9000.0, 0.5))[(SR * 0.2) as usize..]);
+        assert!(high < low * 0.2, "cab rolls off the top: {low} vs {high}");
+        let out = run_chain(&[("cabinet", "ir=no-such-file.wav")], &sine(200.0, 0.3));
+        assert!(rms(&out[7200..]) > 0.05, "falls back to the built-in cab");
+    }
+
+    #[test]
+    fn cabinet_loads_a_wav_impulse_response() {
+        let dir = std::env::temp_dir().join("guitar-fx-test-ir");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("pulse.wav");
+        let spec = hound::WavSpec { channels: 1, sample_rate: 48000, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
+        let mut w = hound::WavWriter::create(&path, spec).unwrap();
+        w.write_sample(i16::MAX).unwrap(); // a unit impulse: the cab should leave the sound alone
+        for _ in 0..100 {
+            w.write_sample(0i16).unwrap();
+        }
+        w.finalize().unwrap();
+        let input = sine(300.0, 0.3);
+        let out = run_chain(&[("cabinet", &format!("ir={}", path.display()))], &input);
+        let err: f32 = input.iter().zip(&out).skip(2000).map(|(a, b)| (a - b).abs()).fold(0.0, f32::max);
+        assert!(err < 0.02, "impulse IR is transparent, max error {err}");
     }
 
     #[test]

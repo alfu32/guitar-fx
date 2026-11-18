@@ -6,6 +6,7 @@ mod theme;
 
 use eframe::egui;
 use guitar_fx_core::chain::{Cmd, Slot};
+use guitar_fx_core::tools::{LoopCmd, LoopState};
 use guitar_fx_core::effects::build;
 use guitar_fx_core::live::{self, LiveOpts, Running, DEFAULT_BUFFER};
 use guitar_fx_core::params::{EffectDef, Kind, Spec, Value, EFFECTS, EXPERIMENTAL, ZEN};
@@ -20,31 +21,7 @@ const HISTORY: usize = 72;
 /// Height of the always-present drop slot between cards; constant so nothing shifts while dragging.
 const GAP: f32 = 18.0;
 
-/// Where the session and the user's own chains live.
-fn config_dir() -> PathBuf {
-    let base = config_base();
-    let dir = base.join("guitar-fx");
-    // Earlier names of this program; carry the old settings over.
-    for old in ["guitarfx", "fxchain"] {
-        let old = base.join(old);
-        if !dir.exists() && old.exists() {
-            let _ = std::fs::rename(&old, &dir);
-        }
-    }
-    dir
-}
-
-fn config_base() -> PathBuf {
-    let home = || std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    let base = if cfg!(windows) {
-        std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(home)
-    } else if cfg!(target_os = "macos") {
-        home().join("Library/Application Support")
-    } else {
-        std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".config"))
-    };
-    base
-}
+use guitar_fx_core::paths::{self, config_dir};
 
 struct Fx {
     id: u64,
@@ -89,6 +66,17 @@ struct App {
     gap_rects: Vec<egui::Rect>,
     dragging: Option<usize>,
     last_hist: Instant,
+    metro_on: bool,
+    bpm: f32,
+    beats: u32,
+    metro_vol: f32,
+    taps: Vec<Instant>,
+    last_beat: (u32, Instant, bool),
+    tuner_on: bool,
+    tuner_mute: bool,
+    tuner_hz: f32,
+    tuner_seen: Instant,
+    loop_vol: f32,
     saved_session: String,
     last_save: Instant,
 }
@@ -120,6 +108,17 @@ impl App {
             gap_rects: Vec::new(),
             dragging: None,
             last_hist: Instant::now(),
+            metro_on: false,
+            bpm: 100.0,
+            beats: 4,
+            metro_vol: 0.5,
+            taps: Vec::new(),
+            last_beat: (0, Instant::now(), false),
+            tuner_on: false,
+            tuner_mute: true,
+            tuner_hz: 0.0,
+            tuner_seen: Instant::now(),
+            loop_vol: 1.0,
             saved_session: String::new(),
             last_save: Instant::now(),
         };
@@ -134,7 +133,7 @@ impl App {
     }
 
     fn chains_dir() -> PathBuf {
-        config_dir().join("chains")
+        paths::chains_dir()
     }
 
     fn scan_chains(&mut self) {
@@ -244,12 +243,31 @@ impl App {
                         running.control.send(Cmd::Bypass { id: fx.id, on: true });
                     }
                 }
+                running.control.meters.set_tuner(self.tuner_on, self.tuner_mute);
+                running.control.send(Cmd::Metronome { on: self.metro_on, bpm: self.bpm, beats: self.beats, volume: self.metro_vol });
+                running.control.send(Cmd::Looper(LoopCmd::Level(self.loop_vol)));
                 self.status = format!("{} → {}", running.input_name, running.output_name);
                 self.error = None;
                 self.running = Some(running);
             }
             Err(e) => self.error = Some(e),
         }
+    }
+
+    fn send_metronome(&self) {
+        self.send(Cmd::Metronome { on: self.metro_on, bpm: self.bpm, beats: self.beats, volume: self.metro_vol });
+    }
+
+    /// Start from scratch: no effects, gains at zero.
+    fn new_chain(&mut self) {
+        for fx in std::mem::take(&mut self.chain) {
+            self.send(Cmd::Remove { id: fx.id });
+        }
+        self.input_db = 0.0;
+        self.output_db = 0.0;
+        self.send(Cmd::Gains { input_db: 0.0, output_db: 0.0 });
+        self.chain_name = "new-chain".into();
+        self.error = None;
     }
 
     fn send(&self, cmd: Cmd) {
@@ -470,6 +488,35 @@ fn param_widget(ui: &mut egui::Ui, salt: &str, spec: &mut Spec, pi: usize) -> bo
                 spec.values[pi] = if auto { Value::Auto } else { Value::Num(v) };
             }
         }
+        Kind::Text { .. } => {
+            // The UI supplies a file picker for the cabinet; elsewhere text is shown read-only.
+            let t = match spec.values[pi] {
+                Value::Text(t) => t,
+                _ => "",
+            };
+            if spec.def.name == "cabinet" {
+                let files = paths::ir_files();
+                let mut chosen = t;
+                egui::ComboBox::from_id_salt(format!("{salt}-ir"))
+                    .width(170.0)
+                    .selected_text(if t.is_empty() { "built-in cabinet" } else { t })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut chosen, "", "built-in cabinet");
+                        for f in &files {
+                            let name = guitar_fx_core::params::intern(f);
+                            ui.selectable_value(&mut chosen, name, f.as_str());
+                        }
+                        ui.separator();
+                        ui.weak(format!("Put .wav files in {}", paths::ir_dir().display()));
+                    });
+                if chosen != t {
+                    spec.values[pi] = Value::Text(chosen);
+                    changed = true;
+                }
+            } else {
+                ui.label(if t.is_empty() { "(none)" } else { t });
+            }
+        }
         Kind::Choice { options, .. } => {
             let mut i = match spec.values[pi] {
                 Value::Choice(i) => i,
@@ -553,6 +600,12 @@ impl eframe::App for App {
                     let color = if x == 0 { egui::Color32::GRAY } else { egui::Color32::from_rgb(220, 120, 60) };
                     ui.colored_label(color, format!("dropouts: {x}"))
                         .on_hover_text("Buffer underruns. If this climbs while you play, pick a larger buffer.");
+                    let m = &r.control.meters;
+                    let ms = m.buffered() as f32 / r.control.sample_rate * 1000.0;
+                    ui.weak(format!("queue {ms:.1} ms")).on_hover_text(format!(
+                        "Audio waiting between input and output (part of the latency). It is kept from growing; {} samples have been dropped so far to do that.",
+                        m.trimmed()
+                    ));
                 }
             });
             if let Some(e) = &self.error {
@@ -563,12 +616,181 @@ impl eframe::App for App {
             ui.add_space(4.0);
         });
 
+        // ---- practice tools: metronome, looper, tuner
+        let mut metro_changed = false;
+        let mut loop_cmd: Option<LoopCmd> = None;
+        let mut tuner_changed = false;
+        egui::Panel::top("tools-bar").show(root, |ui| {
+            ui.add_space(2.0);
+            ui.horizontal_wrapped(|ui| {
+                // metronome
+                ui.label(egui::RichText::new("Metronome").strong());
+                let (clicks, at, accent) = self.last_beat;
+                if let Some(r) = &self.running {
+                    let (c, a) = r.control.meters.beat();
+                    if c != clicks {
+                        self.last_beat = (c, Instant::now(), a);
+                    }
+                }
+                let lit = self.metro_on && self.last_beat.1.elapsed() < Duration::from_millis(110);
+                let (dot, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+                let dot_color = if !lit { egui::Color32::from_gray(70) } else if accent { egui::Color32::from_rgb(235, 80, 70) } else { egui::Color32::from_rgb(90, 200, 120) };
+                ui.painter().circle_filled(dot.center(), 6.0, dot_color);
+                let _ = at;
+                if ui.selectable_label(self.metro_on, if self.metro_on { "■ On" } else { "▶ Off" }).clicked() {
+                    self.metro_on = !self.metro_on;
+                    metro_changed = true;
+                }
+                metro_changed |= ui.add(egui::DragValue::new(&mut self.bpm).range(20.0..=300.0).suffix(" bpm")).changed();
+                metro_changed |= ui.add(egui::DragValue::new(&mut self.beats).range(1..=12).suffix(" / bar")).changed();
+                metro_changed |= ui.add(egui::Slider::new(&mut self.metro_vol, 0.0..=1.0).show_value(false)).on_hover_text("Click volume").changed();
+                if ui.button("Tap").on_hover_text("Tap the tempo").clicked() {
+                    let now = Instant::now();
+                    self.taps.retain(|t| now.duration_since(*t) < Duration::from_millis(2500));
+                    self.taps.push(now);
+                    if self.taps.len() >= 2 {
+                        let span = now.duration_since(self.taps[0]).as_secs_f32();
+                        let bpm = 60.0 * (self.taps.len() - 1) as f32 / span;
+                        self.bpm = bpm.clamp(20.0, 300.0).round();
+                        metro_changed = true;
+                    }
+                }
+                ui.separator();
+
+                // looper
+                ui.label(egui::RichText::new("Looper").strong());
+                let st = self.running.as_ref().map_or(LoopState::Empty, |r| r.control.meters.loop_state());
+                let live = self.running.is_some();
+                ui.add_enabled_ui(live, |ui| {
+                    let (label, cmd) = match st {
+                        LoopState::Empty => ("● Record", LoopCmd::Record),
+                        LoopState::Recording => ("▶ Close loop", LoopCmd::Play),
+                        LoopState::Playing => ("◉ Overdub", LoopCmd::Overdub),
+                        LoopState::Overdubbing => ("▶ Back to play", LoopCmd::Play),
+                        LoopState::Stopped => ("▶ Play", LoopCmd::Play),
+                    };
+                    let color = match st {
+                        LoopState::Recording => egui::Color32::from_rgb(235, 70, 70),
+                        LoopState::Overdubbing => egui::Color32::from_rgb(235, 170, 60),
+                        LoopState::Playing => egui::Color32::from_rgb(90, 200, 120),
+                        _ => ui.visuals().text_color(),
+                    };
+                    if ui.button(egui::RichText::new(label).color(color)).clicked() {
+                        loop_cmd = Some(cmd);
+                    }
+                    if ui.add_enabled(matches!(st, LoopState::Playing | LoopState::Overdubbing | LoopState::Recording), egui::Button::new("■ Stop")).clicked() {
+                        loop_cmd = Some(LoopCmd::Stop);
+                    }
+                    if ui.add_enabled(st != LoopState::Empty, egui::Button::new("✕ Clear")).clicked() {
+                        loop_cmd = Some(LoopCmd::Clear);
+                    }
+                    if ui.add(egui::Slider::new(&mut self.loop_vol, 0.0..=1.5).show_value(false)).on_hover_text("Loop volume").changed() {
+                        loop_cmd = Some(LoopCmd::Level(self.loop_vol));
+                    }
+                });
+                if let Some(r) = &self.running {
+                    let (len, pos) = r.control.meters.loop_seconds(r.control.sample_rate);
+                    if st != LoopState::Empty {
+                        let frac = if st == LoopState::Recording { 1.0 } else if len > 0.0 { pos / len } else { 0.0 };
+                        ui.add(egui::ProgressBar::new(frac).desired_width(90.0).text(format!("{len:.1} s")));
+                    }
+                }
+                ui.separator();
+
+                // tuner
+                if ui.selectable_label(self.tuner_on, "Tuner").on_hover_text("Open the tuner").clicked() {
+                    self.tuner_on = !self.tuner_on;
+                    tuner_changed = true;
+                }
+            });
+            ui.add_space(2.0);
+        });
+        if metro_changed {
+            self.send_metronome();
+        }
+        if let Some(c) = loop_cmd {
+            self.send(Cmd::Looper(c));
+        }
+        if tuner_changed {
+            if let Some(r) = &self.running {
+                r.control.meters.set_tuner(self.tuner_on, self.tuner_mute);
+            }
+        }
+        if self.tuner_on {
+            let mut open = true;
+            let mut mute_changed = false;
+            let hz = self.running.as_ref().map_or(0.0, |r| r.control.meters.pitch());
+            if hz > 0.0 {
+                self.tuner_hz = hz;
+                self.tuner_seen = Instant::now();
+            }
+            let live_note = self.tuner_seen.elapsed() < Duration::from_millis(400) && self.tuner_hz > 0.0;
+            let shown_hz = self.tuner_hz;
+            let running = self.running.is_some();
+            let mut mute = self.tuner_mute;
+            egui::Window::new("Tuner").open(&mut open).collapsible(false).resizable(false).show(&ctx, |ui| {
+                ui.set_min_width(300.0);
+                if !running {
+                    ui.label("Press Start so the tuner can hear the guitar.");
+                }
+                let (name, cents) = if live_note {
+                    let midi = 69.0 + 12.0 * (shown_hz / 440.0).log2();
+                    let n = midi.round();
+                    let names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+                    (format!("{}{}", names[(n as i32).rem_euclid(12) as usize], (n as i32).div_euclid(12) - 1), (midi - n) * 100.0)
+                } else {
+                    ("—".to_string(), 0.0)
+                };
+                let color = if !live_note {
+                    egui::Color32::GRAY
+                } else if cents.abs() < 5.0 {
+                    egui::Color32::from_rgb(80, 210, 120)
+                } else if cents.abs() < 15.0 {
+                    egui::Color32::from_rgb(235, 190, 60)
+                } else {
+                    egui::Color32::from_rgb(235, 90, 80)
+                };
+                ui.vertical_centered(|ui| {
+                    ui.label(egui::RichText::new(name).size(54.0).strong().color(color));
+                    ui.label(if live_note { format!("{shown_hz:.1} Hz   {cents:+.0} cents") } else { "play a string".into() });
+                });
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(300.0, 36.0), egui::Sense::hover());
+                let p = ui.painter();
+                p.rect_filled(rect, 6.0, egui::Color32::from_black_alpha(90));
+                let x_of = |c: f32| rect.center().x + c / 50.0 * (rect.width() / 2.0 - 10.0);
+                for t in [-50.0, -25.0, 0.0, 25.0, 50.0] {
+                    let h = if t == 0.0 { 14.0 } else { 7.0 };
+                    p.line_segment([egui::pos2(x_of(t), rect.center().y - h), egui::pos2(x_of(t), rect.center().y + h)], egui::Stroke::new(1.5, egui::Color32::from_gray(120)));
+                }
+                if live_note {
+                    p.circle_filled(egui::pos2(x_of(cents.clamp(-50.0, 50.0)), rect.center().y), 9.0, color);
+                }
+                ui.add_space(4.0);
+                mute_changed = ui.checkbox(&mut mute, "Mute the output while tuning").changed();
+            });
+            self.tuner_mute = mute;
+            if !open {
+                self.tuner_on = false;
+                mute_changed = true;
+            }
+            if mute_changed {
+                if let Some(r) = &self.running {
+                    r.control.meters.set_tuner(self.tuner_on, self.tuner_mute);
+                }
+            }
+            ctx.request_repaint_after(Duration::from_millis(50));
+        }
+
         let mut load_builtin: Option<usize> = None;
         let mut load_user: Option<String> = None;
+        let mut new_chain = false;
         let mut delete_user: Option<String> = None;
         egui::Panel::left("mine").resizable(false).default_size(230.0).show(root, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.heading("My chains");
+                if ui.add_sized([200.0, 24.0], egui::Button::new("＋  New chain")).on_hover_text("Remove every effect and start again").clicked() {
+                    new_chain = true;
+                }
                 if self.user_chains.is_empty() {
                     ui.weak("Nothing saved yet.");
                 }
@@ -635,6 +857,9 @@ impl eframe::App for App {
         if let Some(k) = load_builtin {
             let (name, text) = BUILTIN[k];
             self.load_chain(text, name);
+        }
+        if new_chain {
+            self.new_chain();
         }
         if let Some(name) = load_user {
             self.load_user_chain(&name);
