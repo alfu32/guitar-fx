@@ -56,7 +56,11 @@ VoiceTitle,7,Text,guitar effects,guitar effects
 ShortDescription,8,Text,"A multi-effect guitar processor: amp models, cabinets, pedals, tuner, looper and metronome, with live monitoring.","A multi-effect guitar processor: amp models, cabinets, pedals, tuner, looper and metronome, with live monitoring."
 DevStudio,9,Text,K3D0,K3D0
 CopyrightTrademarkInformation,12,Text,© 2026 K3D0,© 2026 K3D0
-AdditionalLicenseTerms,13,Text,,
+AdditionalLicenseTerms,13,Text,"guitar-fx is provided ""as is"", without warranty of any kind, express or implied. You may use it for personal and commercial music making. K3D0 is not liable for any damage, data loss or hearing damage arising from its use. Keep your output volume at a safe level, especially with headphones.
+
+Privacy: the app does not collect or transmit personal data. See https://github.com/alfu32/guitar-fx/blob/master/PRIVACY.md","guitar-fx is provided ""as is"", without warranty of any kind, express or implied. You may use it for personal and commercial music making. K3D0 is not liable for any damage, data loss or hearing damage arising from its use. Keep your output volume at a safe level, especially with headphones.
+
+Privacy: the app does not collect or transmit personal data. See https://github.com/alfu32/guitar-fx/blob/master/PRIVACY.md"
 DesktopScreenshot1,100,Relative path (or URL to file in Partner Center),images/screenshot1.png,images/screenshot1.png
 DesktopScreenshot2,101,Relative path (or URL to file in Partner Center),images/screenshot2.png,images/screenshot2.png
 DesktopScreenshot3,102,Relative path (or URL to file in Partner Center),images/screenshot3.png,images/screenshot3.png

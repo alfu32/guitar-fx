@@ -40,6 +40,9 @@ FEATURES = [
     "More than 20 ready-made chains; save your own",
     "Works offline: no account, no ads, no data collected",
 ]
+LICENSE = """guitar-fx is provided "as is", without warranty of any kind, express or implied. You may use it for personal and commercial music making. K3D0 is not liable for any damage, data loss or hearing damage arising from its use. Keep your output volume at a safe level, especially with headphones.
+
+Privacy: the app does not collect or transmit personal data. See https://github.com/alfu32/guitar-fx/blob/master/PRIVACY.md"""
 SHORT = "A multi-effect guitar processor: amp models, cabinets, pedals, tuner, looper and metronome, with live monitoring."
 RELEASE = """Amp models, cabinet impulse responses, noise gate, EQ, tuner, metronome and looper.
 New chain button; drag to reorder effects; level graph in each card; last session restored.
@@ -58,7 +61,7 @@ CAPTIONS = [
 ]
 VALUES = {"Description": DESCRIPTION, "ReleaseNotes": RELEASE, "Title": "guitar-fx", "ShortTitle": "guitar-fx",
           "SortTitle": "guitar-fx", "VoiceTitle": "guitar effects", "ShortDescription": SHORT, "DevStudio": "K3D0",
-          "CopyrightTrademarkInformation": "© 2026 K3D0", "AdditionalLicenseTerms": "",
+          "CopyrightTrademarkInformation": "© 2026 K3D0", "AdditionalLicenseTerms": LICENSE,
           "StoreLogo720x1080": "images/poster-720x1080.png", "StoreLogo1080x1080": "images/logo-1080x1080.png",
           "StoreLogo300x300": "images/logo-300x300.png", "PromoImage1920x1080": "images/promo-1920x1080.png",
           "PromoImage2400x1200": "images/promo-2400x1200.png"}
