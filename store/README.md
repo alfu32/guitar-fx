@@ -2,7 +2,7 @@
 
 Everything is regenerated from this folder; nothing here is uploaded automatically.
 
-- `msstore/` (listing.csv + images/): the Microsoft Store listing (product `9P816T97D1CC`). In Partner Center choose **Store listings → Import / export → Import** and upload the folder.
+- `msstore/` (listing.csv + images/): the Microsoft Store listing (product `9P816T97D1CC`). In Partner Center choose **Store listings → Import / export → Import** and upload the folder `store/msstore` itself (image paths in the CSV start with its name, `msstore/`; keep the folder name).
   Then review the text, set the category and age rating, and add the privacy policy URL.
 - `snap/`: Snap Store artwork and `listing.md` with every dashboard field.
 - `make_assets.py` draws the logos and banners and resizes screenshots; `make_listing.py` fills the CSV from the

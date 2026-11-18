@@ -4,6 +4,7 @@ usage: make_listing.py EXPORT.csv"""
 import csv, sys, pathlib
 
 HERE = pathlib.Path(__file__).parent
+ROOT = "msstore/"   # paths start with the name of the uploaded folder (store/msstore), as in the other store listings
 REPO = "https://github.com/alfu32/guitar-fx"
 DESCRIPTION = """guitar-fx is a multi-effect processor for electric guitar. Plug your guitar into an audio interface, build a chain of effects, and hear it live while you play. Everything runs on your computer: no account, no internet, no subscription.
 
@@ -62,15 +63,15 @@ CAPTIONS = [
 VALUES = {"Description": DESCRIPTION, "ReleaseNotes": RELEASE, "Title": "guitar-fx", "ShortTitle": "guitar-fx",
           "SortTitle": "guitar-fx", "VoiceTitle": "guitar effects", "ShortDescription": SHORT, "DevStudio": "K3D0",
           "CopyrightTrademarkInformation": "© 2026 K3D0", "AdditionalLicenseTerms": LICENSE,
-          "StoreLogo720x1080": "images/poster-720x1080.png", "StoreLogo1080x1080": "images/logo-1080x1080.png",
-          "StoreLogo300x300": "images/logo-300x300.png", "PromoImage1920x1080": "images/promo-1920x1080.png",
-          "PromoImage2400x1200": "images/promo-2400x1200.png"}
+          "StoreLogo720x1080": ROOT + "images/poster-720x1080.png", "StoreLogo1080x1080": ROOT + "images/logo-1080x1080.png",
+          "StoreLogo300x300": ROOT + "images/logo-300x300.png", "PromoImage1920x1080": ROOT + "images/promo-1920x1080.png",
+          "PromoImage2400x1200": ROOT + "images/promo-2400x1200.png"}
 for i, f in enumerate(FEATURES, 1): VALUES[f"Feature{i}"] = f
 for i, f in enumerate(MINHW, 1): VALUES[f"MinimumHardwareReq{i}"] = f
 for i, f in enumerate(RECHW, 1): VALUES[f"RecommendedHardwareReq{i}"] = f
 for i, f in enumerate(TERMS, 1): VALUES[f"SearchTerm{i}"] = f
 for i, c in enumerate(CAPTIONS, 1):
-    VALUES[f"DesktopScreenshot{i}"] = f"images/screenshot{i}.png"; VALUES[f"DesktopScreenshotCaption{i}"] = c
+    VALUES[f"DesktopScreenshot{i}"] = ROOT + f"images/screenshot{i}.png"; VALUES[f"DesktopScreenshotCaption{i}"] = c
 
 src = pathlib.Path(sys.argv[1]); rows = list(csv.reader(open(src, encoding="utf-8-sig", newline="")))
 used = set()
