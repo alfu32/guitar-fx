@@ -77,6 +77,7 @@ Each takes `name=value,name=value`; a bare number sets the first parameter (mark
 | `--gate` | threshold* dB (-55), attack ms (1), hold ms (60), release ms (120, time to fall ~60 dB), depth dB (-80) |
 | `--eq` | mid* dB (0), low dB, high dB, mid-freq Hz (800), mid-q (0.8), lowcut Hz (20 = off), highcut Hz (20000 = off) |
 | `--amp` | gain* (0.5), model `clean`/`crunch`/`brit`/`lead`/`modern` (crunch), bass, mid, treble, presence, master (0.5 each), level (1) — modelled tube amp, 2x oversampled; put a cabinet after it |
+| `--nam` | model FILE (a `.nam` capture: a path, or a name inside the `nam` config folder), quality `full`/`lite`, input dB (0), level dB (0), normalize `on`/`off` (on), mix (1) — runs a Neural Amp Modeler capture of an amp, pedal or rig as a neural network; no added delay at 48 kHz |
 | `--cabinet` | cab* `1x12-open`/`2x12`/`4x12`/`1x8-vintage`, ir FILE (a `.wav` impulse response; name in the `ir` config folder or a path), trim ms (50), mix (1), level dB (0) |
 | `--arpeggio` | mix* (0.7), chord (major, minor, major7, minor7, sus4, power, dim, octaves, pentatonic, minor-pentatonic), pattern (up, down, bounce, random), rate (1/4, 1/8, 1/8T, 1/16, 1/16T), bpm (100), octaves 1-2, gate (0.6), swing, release ms — turns a single sustained note into an arpeggio of pitch-shifted chord tones (about 10 ms of delay; follows one note, so play single notes or the lowest note of a chord) |
 | `--transient` | attack* -1..1 (-0.6; negative softens the pick, positive sharpens), time ms (15), mix (1) — transient shaper |
@@ -97,7 +98,13 @@ time (guitar down to low E), and it degrades on chords.
 A second bar under the controls holds a **metronome** (bpm, beats per bar, click volume, tap
 tempo, a light that flashes on every beat), a **looper** (Record, then Close loop, Overdub,
 Stop, Clear; it records what comes out of the chain, up to 60 s) and a **tuner** (note, cents
-and a needle; the output can be muted while tuning). Cabinet impulse responses go in
+and a needle; the output can be muted while tuning). Neural Amp Modeler captures (`.nam`, from [tone3000.com](https://www.tone3000.com) and elsewhere)
+go in `~/.config/guitar-fx/nam/` (`%APPDATA%\guitar-fx\nam`), folders allowed, and appear in the Neural Amp
+card. They are not bundled: each capture carries its own licence, so check it before you share one.
+Files in the current "slimmable" format (a full and a lite network in one file) and the older WaveNet
+and LSTM files load; models with FiLM layers do not. `lite` costs about a third of `full`. Captures
+are made at 48 kHz; on a 44.1 kHz interface the signal is resampled around the model (a few samples of delay).
+Cabinet impulse responses go in
 `~/.config/guitar-fx/ir/` (`%APPDATA%\guitar-fx\ir` on Windows) and appear in the Cabinet card.
 
 ## Latency stays flat

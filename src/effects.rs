@@ -49,6 +49,7 @@ pub fn build(spec: &Spec, sr: f32) -> Box<dyn Effect> {
         "eq" => Box::new(Eq::new(spec, sr)),
         "amp" => Box::new(Amp::new(spec, sr)),
         "cabinet" => Box::new(Cabinet::new(spec, sr)),
+        "nam" => Box::new(NeuralAmp::new(spec, sr)),
         "bitcrusher" => Box::new(Bitcrusher::new(spec)),
         "ringmod" => Box::new(RingMod::new(spec, sr)),
         "reverse" => Box::new(Reverse::new(spec, sr)),
@@ -1643,6 +1644,135 @@ pub fn load_ir(name: &str, sr: f32) -> Result<Vec<f32>, String> {
         .collect())
 }
 
+/// A streaming cubic (Catmull-Rom) resampler, for models trained at another rate than the
+/// audio device runs at. It adds about two input samples of delay.
+struct Resample {
+    h: [f32; 4],
+    t: f32,
+    step: f32,
+}
+
+impl Resample {
+    /// `step` is input samples per output sample.
+    fn new(step: f32) -> Self {
+        Self { h: [0.0; 4], t: 0.0, step }
+    }
+
+    fn push(&mut self, x: f32, out: &mut Vec<f32>) {
+        self.h = [self.h[1], self.h[2], self.h[3], x];
+        let [a, b, c, d] = self.h;
+        while self.t < 1.0 {
+            let t = self.t;
+            out.push(b + 0.5 * t * (c - a + t * (2.0 * a - 5.0 * b + 4.0 * c - d + t * (3.0 * (b - c) + d - a))));
+            self.t += self.step;
+        }
+        self.t -= 1.0;
+    }
+}
+
+/// A Neural Amp Modeler capture (`.nam`) of an amp, pedal or whole rig, run as a network.
+/// It adds no delay at the model's own sample rate (48 kHz for nearly all captures);
+/// at another rate the signal is resampled around it. With no model chosen, or one that
+/// fails to load, the signal passes through untouched.
+struct NeuralAmp {
+    spec: Spec,
+    model: Option<crate::nam::Model>,
+    resample: Option<(Resample, Resample, std::collections::VecDeque<f32>, f32)>,
+    in_gain: f32,
+    out_gain: f32,
+    mix: f32,
+    scratch: Vec<f32>,
+    wet: Vec<f32>,
+    dry: Vec<f32>,
+}
+
+impl NeuralAmp {
+    fn new(spec: Spec, sr: f32) -> Self {
+        let model = match spec.text("model") {
+            "" => None,
+            name => match load_nam(name, spec.choice("quality") == 1) {
+                Ok(m) => Some(m),
+                Err(e) => {
+                    eprintln!("nam: {e}; passing the signal through");
+                    None
+                }
+            },
+        };
+        let resample = model.as_ref().and_then(|m| {
+            ((m.sample_rate - sr).abs() > 1.0).then(|| {
+                let mut fifo = std::collections::VecDeque::new();
+                fifo.extend([0.0f32; 4]);
+                (Resample::new(sr / m.sample_rate), Resample::new(m.sample_rate / sr), fifo, 0.0)
+            })
+        });
+        let mut s = Self { spec, model, resample, in_gain: 1.0, out_gain: 1.0, mix: 1.0, scratch: Vec::new(), wet: Vec::new(), dry: Vec::new() };
+        s.configure();
+        s
+    }
+
+    fn configure(&mut self) {
+        let db = |d: f32| 10f32.powf(d / 20.0);
+        self.in_gain = db(self.spec.num("input"));
+        // captures are normalised to a common loudness (-18 dB) unless that is switched off
+        let norm = match (&self.model, self.spec.choice("normalize")) {
+            (Some(m), 0) => m.loudness.map_or(0.0, |l| (-18.0 - l).clamp(-24.0, 24.0)),
+            _ => 0.0,
+        };
+        self.out_gain = db(self.spec.num("level") + norm);
+        self.mix = self.spec.num("mix");
+    }
+}
+
+/// Reads a `.nam` file. The name is a path or a file inside the `nam` folder of the config directory.
+pub fn load_nam(name: &str, lite: bool) -> Result<crate::nam::Model, String> {
+    let direct = std::path::PathBuf::from(name);
+    let path = if direct.is_absolute() || direct.exists() { direct } else { crate::paths::nam_dir().join(name) };
+    crate::nam::Model::load(&path, lite)
+}
+
+impl Effect for NeuralAmp {
+    fn process(&mut self, buf: &mut [f32]) {
+        let Some(model) = self.model.as_mut() else { return };
+        let (in_gain, out_gain, mix) = (self.in_gain, self.out_gain, self.mix);
+        if mix < 1.0 {
+            self.dry.clear();
+            self.dry.extend_from_slice(buf);
+        }
+        match self.resample.as_mut() {
+            None => {
+                buf.iter_mut().for_each(|v| *v *= in_gain);
+                model.process(buf);
+            }
+            Some((down, up, fifo, last)) => {
+                self.scratch.clear();
+                for v in buf.iter() {
+                    down.push(*v * in_gain, &mut self.scratch);
+                }
+                model.process(&mut self.scratch);
+                for v in self.scratch.iter() {
+                    up.push(*v, &mut self.wet);
+                }
+                fifo.extend(self.wet.drain(..));
+                for v in buf.iter_mut() {
+                    // an empty queue (a rounding step) repeats the last sample
+                    *last = fifo.pop_front().unwrap_or(*last);
+                    *v = *last;
+                }
+            }
+        }
+        for v in buf.iter_mut() {
+            *v = if v.is_finite() { *v * out_gain } else { 0.0 };
+        }
+        if mix < 1.0 {
+            for (v, d) in buf.iter_mut().zip(&self.dry) {
+                *v = d * (1.0 - mix) + *v * mix;
+            }
+        }
+    }
+
+    live_set!();
+}
+
 /// Convolves the signal with a cabinet impulse response (direct form, a few thousand
 /// taps: cheap enough for a 64-frame live buffer).
 struct Cabinet {
@@ -2192,6 +2322,57 @@ mod tests {
             let out = run_chain(&[(def.name, "")], &sine(196.0, 1.0));
             assert!(out.iter().all(|v| v.is_finite() && v.abs() < 4.0), "{} produced bad samples", def.name);
         }
+    }
+
+    #[test]
+    fn neural_amp_passes_through_without_a_model_and_runs_a_file() {
+        let input = sine(196.0, 0.4);
+        let out = run_chain(&[("nam", "")], &input);
+        assert_eq!(out, input, "no model: untouched");
+        let out = run_chain(&[("nam", "model=no-such-file.nam")], &input);
+        assert_eq!(out, input, "a model that fails to load: untouched");
+
+        let (json, _) = crate::nam::tests::tiny();
+        let path = std::env::temp_dir().join(format!("guitar-fx-test-{}.nam", std::process::id()));
+        std::fs::write(&path, json.to_string()).unwrap();
+        let spec = format!("model={}", path.display());
+        let out = run_chain(&[("nam", &spec)], &input);
+        assert!(out.iter().all(|v| v.is_finite()));
+        assert_ne!(out, input);
+        // the model is 48 kHz and this test runs at SR: block size must not change the result
+        let mut fx = build(&parse_spec("nam", &spec).unwrap(), SR);
+        let mut chunked = input.clone();
+        for c in chunked.chunks_mut(37) {
+            fx.process(c);
+        }
+        let whole = run_chain(&[("nam", &spec)], &input);
+        for (a, b) in chunked.iter().zip(&whole) {
+            assert!((a - b).abs() < 1e-3, "{a} vs {b}");
+        }
+        // another device rate: resampled around the model, still sound and about as loud
+        let sr = 44100.0;
+        let tone: Vec<f32> = (0..(sr * 0.5) as usize).map(|n| 0.3 * (TAU * 196.0 * n as f32 / sr).sin()).collect();
+        let mut fx = build(&parse_spec("nam", &format!("{spec} normalize=off")).unwrap(), sr);
+        let mut y = tone.clone();
+        for c in y.chunks_mut(64) {
+            fx.process(c);
+        }
+        assert!(y.iter().all(|v| v.is_finite()));
+        assert!(rms(&y[2000..]) > 1e-4);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn resampler_keeps_a_tone_intact() {
+        let (from, to) = (44100.0f32, 48000.0f32);
+        let mut up = Resample::new(from / to);
+        let mut out = Vec::new();
+        for n in 0..44100 {
+            up.push(0.5 * (TAU * 440.0 * n as f32 / from).sin(), &mut out);
+        }
+        assert!((out.len() as f32 - 48000.0).abs() < 4.0, "{} samples", out.len());
+        let r = rms(&out[1000..]);
+        assert!((r - 0.5 / 2f32.sqrt()).abs() < 0.01, "rms {r}");
     }
 
     #[test]

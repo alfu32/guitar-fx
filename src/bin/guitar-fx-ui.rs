@@ -513,6 +513,26 @@ fn param_widget(ui: &mut egui::Ui, salt: &str, spec: &mut Spec, pi: usize) -> bo
                     spec.values[pi] = Value::Text(chosen);
                     changed = true;
                 }
+            } else if spec.def.name == "nam" {
+                let files = paths::nam_files();
+                let mut chosen = t;
+                let shown = if t.is_empty() { "(none)" } else { t.rsplit(['/', '\\']).next().unwrap_or(t) };
+                egui::ComboBox::from_id_salt(format!("{salt}-nam"))
+                    .width(190.0)
+                    .selected_text(shown)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut chosen, "", "(none)");
+                        for f in &files {
+                            let name = guitar_fx_core::params::intern(f);
+                            ui.selectable_value(&mut chosen, name, f.as_str());
+                        }
+                        ui.separator();
+                        ui.weak(format!("Put .nam files in {}", paths::nam_dir().display()));
+                    });
+                if chosen != t {
+                    spec.values[pi] = Value::Text(chosen);
+                    changed = true;
+                }
             } else {
                 ui.label(if t.is_empty() { "(none)" } else { t });
             }

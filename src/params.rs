@@ -55,6 +55,8 @@ const ARP_PATTERNS: &[&str] = &["up", "down", "bounce", "random"];
 const ARP_RATES: &[&str] = &["1/4", "1/8", "1/8T", "1/16", "1/16T"];
 const SHAPES: &[&str] = &["sine", "square"];
 const AMP_MODELS: &[&str] = &["clean", "crunch", "brit", "lead", "modern"];
+const NAM_QUALITY: &[&str] = &["full", "lite"];
+const NAM_NORMALIZE: &[&str] = &["on", "off"];
 const CABS: &[&str] = &["1x12-open", "2x12", "4x12", "1x8-vintage"];
 
 pub const EFFECTS: &[EffectDef] = &[
@@ -277,6 +279,19 @@ pub const EFFECTS: &[EffectDef] = &[
         ],
     },
     EffectDef {
+        name: "nam",
+        title: "Neural Amp",
+        primary: "model",
+        params: &[
+            text_param("model", "", false),
+            choice("quality", NAM_QUALITY, 0, false),
+            num("input", 0.0, -24.0, 24.0, "dB", true),
+            num("level", 0.0, -24.0, 24.0, "dB", true),
+            choice("normalize", NAM_NORMALIZE, 0, true),
+            num("mix", 1.0, 0.0, 1.0, "", true),
+        ],
+    },
+    EffectDef {
         name: "cabinet",
         title: "Cabinet",
         primary: "cab",
@@ -424,7 +439,22 @@ impl Spec {
         let def = effect_def(name).ok_or_else(|| format!("unknown effect '{name}'"))?;
         let mut spec = Spec::new(def);
         let valid = || def.params.iter().map(|p| p.key).collect::<Vec<_>>().join(", ");
-        for part in raw.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        // A comma inside a text value (a file name such as `Amp (1994, rev B).nam`) does not
+        // start a new parameter: only a piece that reads `key=...` does.
+        let mut parts: Vec<String> = Vec::new();
+        for piece in raw.split(',') {
+            let key_value = piece
+                .split_once('=')
+                .is_some_and(|(k, _)| !k.trim().is_empty() && k.trim().chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+            match parts.last_mut() {
+                Some(last) if !key_value && last.contains('=') => {
+                    last.push(',');
+                    last.push_str(piece);
+                }
+                _ => parts.push(piece.to_string()),
+            }
+        }
+        for part in parts.iter().map(|p| p.trim()).filter(|p| !p.is_empty()) {
             let (key, text) = match part.split_once('=') {
                 Some((k, v)) => (k.trim().to_lowercase().replace('_', "-"), v.trim()),
                 None => (def.primary.to_string(), part),
@@ -514,4 +544,26 @@ fn normalize_choice(key: &str, text: &str) -> String {
         _ => return t,
     };
     sharp.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn commas_inside_a_text_value_stay_in_the_value() {
+        let name = "Matchless C-30 (1994, Sampson-era), Clean and driven/94 Match C30 J 5 ES412.nam";
+        let spec = Spec::parse("nam", &format!("model={name},input=3,quality=lite")).unwrap();
+        assert_eq!(spec.text("model"), name);
+        assert_eq!(spec.num("input"), 3.0);
+        assert_eq!(spec.option("quality"), "lite");
+        // and it survives being written out and read back
+        let again = Spec::parse("nam", &spec.raw()).unwrap();
+        assert_eq!(again.text("model"), name);
+        assert_eq!(again.num("input"), 3.0);
+        // plain specs are unchanged
+        let od = Spec::parse("overdrive", "drive=0.4, tone=0.6").unwrap();
+        assert_eq!(od.num("drive"), 0.4);
+        assert_eq!(od.num("tone"), 0.6);
+    }
 }

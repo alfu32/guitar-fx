@@ -48,3 +48,32 @@ pub fn ir_files() -> Vec<String> {
     v.sort();
     v
 }
+
+/// Drop Neural Amp Modeler captures (`.nam`) here, in folders if you like; the Neural Amp
+/// effect finds them by their path inside this folder.
+pub fn nam_dir() -> PathBuf {
+    config_dir().join("nam")
+}
+
+/// Paths (relative to `nam_dir`, with `/`) of the `.nam` files below it.
+pub fn nam_files() -> Vec<String> {
+    fn walk(dir: &std::path::Path, rel: &str, depth: usize, out: &mut Vec<String>) {
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        for e in rd.filter_map(|e| e.ok()) {
+            let Ok(name) = e.file_name().into_string() else { continue };
+            let path = e.path();
+            let here = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
+            if path.is_dir() {
+                if depth < 4 {
+                    walk(&path, &here, depth + 1, out);
+                }
+            } else if name.to_lowercase().ends_with(".nam") {
+                out.push(here);
+            }
+        }
+    }
+    let mut v = Vec::new();
+    walk(&nam_dir(), "", 0, &mut v);
+    v.sort();
+    v
+}

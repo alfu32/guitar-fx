@@ -30,6 +30,7 @@ pub fn accent(effect: &str) -> Color32 {
         "eq" => (100, 200, 170),
         "amp" => (225, 175, 80),
         "cabinet" => (160, 120, 90),
+        "nam" => (235, 95, 95),
         _ => (150, 150, 150),
     };
     Color32::from_rgb(r, g, b)
@@ -150,6 +151,21 @@ pub fn effect_icon(ui: &mut egui::Ui, name: &str, color: Color32, size: f32) {
             p.line_segment([at(0.5, -0.1), at(0.5, 1.1)], Stroke::new(w * 0.7, color));
             p.line_segment([at(-0.1, 0.5), at(1.1, 0.5)], Stroke::new(w * 0.7, color));
             p.circle_filled(c, rad * 0.2, color);
+        }
+        "nam" => {
+            // a small neural net: three columns of nodes, fully linked
+            let cols: [&[f32]; 3] = [&[0.3, 0.7], &[0.15, 0.5, 0.85], &[0.3, 0.7]];
+            for i in 0..2 {
+                for y in cols[1].iter() {
+                    p.line_segment([at(0.12, cols[0][i]), at(0.5, *y)], Stroke::new(w * 0.5, tint(color, 150)));
+                    p.line_segment([at(0.5, *y), at(0.88, cols[2][i])], Stroke::new(w * 0.5, tint(color, 150)));
+                }
+            }
+            for (x, col) in [0.12, 0.5, 0.88].iter().zip(cols.iter()) {
+                for y in col.iter() {
+                    p.circle_filled(at(*x, *y), rad * 0.16, color);
+                }
+            }
         }
         "arpeggio" => {
             // rising steps, each topped by a note head
