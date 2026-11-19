@@ -1645,10 +1645,45 @@ pub fn load_ir(name: &str, sr: f32) -> Result<Vec<f32>, String> {
         .collect())
 }
 
+/// The period of the loudest repeating pattern in `x` (newest samples last), in samples,
+/// by normalised autocorrelation of the last `w` samples. Harmonics repeat with the
+/// period of the note even when its fundamental has died away, so this finds the note's
+/// pitch where a zero-crossing trigger would lock onto a louder harmonic.
+fn find_period(x: &[f32], w: usize, min_lag: usize, max_lag: usize) -> Option<usize> {
+    if x.len() < w + max_lag + 1 {
+        return None;
+    }
+    let a = &x[x.len() - w..];
+    let ea: f32 = a.iter().map(|v| v * v).sum();
+    if ea < 1e-9 {
+        return None;
+    }
+    let mut r = vec![0.0f32; max_lag + 2];
+    let mut best = 0.0f32;
+    for lag in min_lag.saturating_sub(1)..=max_lag + 1 {
+        let b = &x[x.len() - w - lag..x.len() - lag];
+        let (mut ab, mut eb) = (0.0f32, 0.0f32);
+        for (p, q) in a.iter().zip(b) {
+            ab += p * q;
+            eb += q * q;
+        }
+        r[lag] = ab / (ea * eb).sqrt().max(1e-12);
+        if lag >= min_lag && lag <= max_lag {
+            best = best.max(r[lag]);
+        }
+    }
+    if best < 0.5 {
+        return None;
+    }
+    // the shortest lag that is a peak nearly as strong as the best (not a multiple of it)
+    (min_lag..=max_lag).find(|&l| r[l] >= 0.9 * best && r[l] >= r[l - 1] && r[l] >= r[l + 1])
+}
+
 /// The classic analog octave-down: a flip-flop that toggles on every period of the played
 /// note gives a square wave at half the pitch, scaled by the note's loudness and smoothed
-/// into a sub tone. No delay and a handful of operations per sample. It follows one note
-/// at a time, so play single notes (chords make it growl).
+/// into a sub tone. No delay. A small pitch tracker (a cheap autocorrelation every 16 ms)
+/// tells the trigger how long a period is, so a loud harmonic cannot make it jump an
+/// octave while the string rings. It follows one note at a time (chords make it growl).
 struct Octave {
     spec: Spec,
     sr: f32,
@@ -1664,10 +1699,22 @@ struct Octave {
     l2: f32,
     sub: f32,
     dry: f32,
+    // pitch tracking, on the signal averaged down to about 6 kHz
+    decim: usize,
+    acc: f32,
+    acc_n: usize,
+    hist: Vec<f32>,
+    since_est: usize,
+    /// the note's period in samples (0 = unknown)
+    period: f32,
+    since_edge: f32,
 }
+
+const OCT_W: usize = 256;
 
 impl Octave {
     fn new(spec: Spec, sr: f32) -> Self {
+        let decim = ((sr / 6000.0).round() as usize).max(1);
         let mut s = Self {
             spec,
             sr,
@@ -1683,6 +1730,13 @@ impl Octave {
             l2: 0.0,
             sub: 0.0,
             dry: 1.0,
+            decim,
+            acc: 0.0,
+            acc_n: 0,
+            hist: vec![0.0; OCT_W + (sr / decim as f32 / 35.0) as usize + 8],
+            since_est: 0,
+            period: 0.0,
+            since_edge: 0.0,
         };
         s.configure();
         s
@@ -1693,21 +1747,48 @@ impl Octave {
         self.sub = self.spec.num("sub");
         self.dry = self.spec.num("dry");
     }
+
+    fn track(&mut self) {
+        let rate = self.sr / self.decim as f32;
+        let (min_lag, max_lag) = ((rate / 700.0) as usize + 1, (rate / 35.0) as usize);
+        if let Some(lag) = find_period(&self.hist, OCT_W, min_lag, max_lag) {
+            self.period = lag as f32 * self.decim as f32;
+        }
+    }
 }
 
 impl Effect for Octave {
     fn process(&mut self, buf: &mut [f32]) {
         for v in buf.iter_mut() {
             let x = *v;
-            // find the fundamental: two low-pass poles keep the harmonics out of the trigger
+            // pitch tracking
+            self.acc += x;
+            self.acc_n += 1;
+            if self.acc_n == self.decim {
+                self.hist.rotate_left(1);
+                *self.hist.last_mut().unwrap() = self.acc / self.decim as f32;
+                self.acc = 0.0;
+                self.acc_n = 0;
+                self.since_est += 1;
+                if self.since_est >= 96 {
+                    self.since_est = 0;
+                    self.track();
+                }
+            }
+            // the trigger: two low-pass poles keep most harmonics out of it
             self.d1 += self.det_a * (x - self.d1);
             self.d2 += self.det_a * (self.d1 - self.d2);
             let a = self.d2.abs();
             self.env = if a > self.env { self.env + 0.1 * (a - self.env) } else { self.env * self.env_rel };
             let thr = 0.15 * self.env + 1e-4;
+            self.since_edge += 1.0;
             if !self.high && self.d2 > thr {
                 self.high = true;
-                self.flip = -self.flip; // one toggle per period: half the frequency
+                // a crossing sooner than a period allows is a harmonic, not the note
+                if self.period == 0.0 || self.since_edge >= 0.75 * self.period {
+                    self.flip = -self.flip; // one toggle per period: half the frequency
+                    self.since_edge = 0.0;
+                }
             } else if self.high && self.d2 < -thr {
                 self.high = false;
             }
@@ -2449,6 +2530,64 @@ mod tests {
         assert!((out.len() as f32 - 48000.0).abs() < 4.0, "{} samples", out.len());
         let r = rms(&out[1000..]);
         assert!((r - 0.5 / 2f32.sqrt()).abs() < 0.01, "rms {r}");
+    }
+
+    /// A plucked note: harmonics with their own decay rates, the upper ones dying first.
+    fn string(f: f32, secs: f32) -> Vec<f32> {
+        let amps = [0.35f32, 0.6, 0.4, 0.25, 0.15, 0.08];
+        (0..(SR * secs) as usize)
+            .map(|n| {
+                let t = n as f32 / SR;
+                (0..6).map(|h| amps[h] * (-t * (0.6 + 1.2 * h as f32)).exp() * (TAU * f * (h + 1) as f32 * t + h as f32).sin()).sum::<f32>() * 0.5
+            })
+            .collect()
+    }
+
+    /// Worst deviation of the output's pitch from half the input's, over 0.2 s windows while the note rings.
+    fn octave_error(out: &[f32], f: f32, from: f32, to: f32) -> f32 {
+        let mut worst = 0.0f32;
+        let mut t = from;
+        while t + 0.2 <= to {
+            let w = &out[(t * SR) as usize..((t + 0.2) * SR) as usize];
+            let c = w.windows(2).filter(|p| p[0] <= 0.0 && p[1] > 0.0).count() as f32 / 0.2;
+            worst = worst.max((c / (f / 2.0) - 1.0).abs());
+            t += 0.1;
+        }
+        worst
+    }
+
+    #[test]
+    fn octave_holds_pitch_while_a_string_decays() {
+        for f in [82.4f32, 110.0, 196.0, 329.6] {
+            let input = string(f, 3.0);
+            let out = run_chain(&[("octave", "sub=1,dry=0")], &input);
+            let e = octave_error(&out, f, 0.3, 2.5);
+            assert!(e < 0.12, "{f} Hz: pitch off by {:.0}% while ringing", e * 100.0);
+        }
+    }
+
+    #[test]
+    fn octave_survives_offset_and_a_dying_fundamental() {
+        for f in [82.4f32, 146.8, 246.9] {
+            // a pickup/interface offset that is large next to the decayed note
+            let with_offset: Vec<f32> = string(f, 3.0).iter().map(|v| v + 0.01).collect();
+            let out = run_chain(&[("octave", "sub=1,dry=0")], &with_offset);
+            let e = octave_error(&out, f, 0.3, 2.5);
+            assert!(e < 0.12, "{f} Hz with DC offset: pitch off by {:.0}%", e * 100.0);
+            // a note whose fundamental fades much faster than its second harmonic
+            let weak: Vec<f32> = (0..(SR * 3.0) as usize)
+                .map(|n| {
+                    let t = n as f32 / SR;
+                    0.3 * (-t * 3.5).exp() * (TAU * f * t).sin()
+                        + 0.35 * (-t * 0.8).exp() * (TAU * 2.0 * f * t + 1.0).sin()
+                        + 0.30 * (-t * 0.9).exp() * (TAU * 3.0 * f * t + 2.0).sin()
+                        + 0.20 * (-t * 1.0).exp() * (TAU * 4.0 * f * t + 0.5).sin()
+                })
+                .collect();
+            let out = run_chain(&[("octave", "sub=1,dry=0")], &weak);
+            let e = octave_error(&out, f, 0.3, 2.5);
+            assert!(e < 0.12, "{f} Hz with a dying fundamental: pitch off by {:.0}%", e * 100.0);
+        }
     }
 
     #[test]
