@@ -18,6 +18,7 @@ pub fn accent(effect: &str) -> Color32 {
         "reverb" => (95, 135, 205),
         "tone-shift" => (60, 205, 100),
         "arpeggio" => (70, 205, 235),
+        "octave" => (120, 120, 245),
         "autotune" => (235, 65, 130),
         "vocoder" => (190, 90, 225),
         "transient" => (225, 150, 90),
@@ -166,6 +167,13 @@ pub fn effect_icon(ui: &mut egui::Ui, name: &str, color: Color32, size: f32) {
                     p.circle_filled(at(*x, *y), rad * 0.16, color);
                 }
             }
+        }
+        "octave" => {
+            // a fast wave over a wave half as fast
+            let up: Vec<Pos2> = (0..=24).map(|k| at(k as f32 / 24.0, 0.28 - 0.18 * (k as f32 * std::f32::consts::TAU * 4.0 / 24.0).sin())).collect();
+            let down: Vec<Pos2> = (0..=24).map(|k| at(k as f32 / 24.0, 0.74 - 0.18 * (k as f32 * std::f32::consts::TAU * 2.0 / 24.0).sin())).collect();
+            p.add(Shape::line(up, Stroke::new(w, tint(color, 150))));
+            p.add(Shape::line(down, st));
         }
         "arpeggio" => {
             // rising steps, each topped by a note head

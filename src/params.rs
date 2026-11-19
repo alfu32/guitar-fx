@@ -176,6 +176,16 @@ pub const EFFECTS: &[EffectDef] = &[
         ],
     },
     EffectDef {
+        name: "octave",
+        title: "Octave down",
+        primary: "sub",
+        params: &[
+            num("sub", 0.8, 0.0, 1.5, "", true),
+            num("dry", 1.0, 0.0, 1.0, "", true),
+            num("tone", 350.0, 100.0, 1500.0, "Hz", true),
+        ],
+    },
+    EffectDef {
         name: "tone-shift",
         title: "Pitch shift",
         primary: "semitones",

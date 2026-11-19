@@ -40,6 +40,7 @@ pub fn build(spec: &Spec, sr: f32) -> Box<dyn Effect> {
         "wah" => Box::new(Wah::new(spec, sr)),
         "harmonics" => Box::new(Harmonics::new(spec, sr)),
         "reverb" => Box::new(Reverb::new(spec, sr)),
+        "octave" => Box::new(Octave::new(spec, sr)),
         "tone-shift" => Box::new(ToneShift::new(spec, sr)),
         "arpeggio" => Box::new(Arpeggio::new(spec, sr)),
         "autotune" => Box::new(Autotune::new(spec, sr)),
@@ -1644,6 +1645,81 @@ pub fn load_ir(name: &str, sr: f32) -> Result<Vec<f32>, String> {
         .collect())
 }
 
+/// The classic analog octave-down: a flip-flop that toggles on every period of the played
+/// note gives a square wave at half the pitch, scaled by the note's loudness and smoothed
+/// into a sub tone. No delay and a handful of operations per sample. It follows one note
+/// at a time, so play single notes (chords make it growl).
+struct Octave {
+    spec: Spec,
+    sr: f32,
+    det_a: f32,
+    d1: f32,
+    d2: f32,
+    env: f32,
+    env_rel: f32,
+    high: bool,
+    flip: f32,
+    out_a: f32,
+    l1: f32,
+    l2: f32,
+    sub: f32,
+    dry: f32,
+}
+
+impl Octave {
+    fn new(spec: Spec, sr: f32) -> Self {
+        let mut s = Self {
+            spec,
+            sr,
+            det_a: one_pole(700.0, sr),
+            d1: 0.0,
+            d2: 0.0,
+            env: 0.0,
+            env_rel: coef(120.0, sr),
+            high: false,
+            flip: 1.0,
+            out_a: 0.0,
+            l1: 0.0,
+            l2: 0.0,
+            sub: 0.0,
+            dry: 1.0,
+        };
+        s.configure();
+        s
+    }
+
+    fn configure(&mut self) {
+        self.out_a = one_pole(self.spec.num("tone"), self.sr);
+        self.sub = self.spec.num("sub");
+        self.dry = self.spec.num("dry");
+    }
+}
+
+impl Effect for Octave {
+    fn process(&mut self, buf: &mut [f32]) {
+        for v in buf.iter_mut() {
+            let x = *v;
+            // find the fundamental: two low-pass poles keep the harmonics out of the trigger
+            self.d1 += self.det_a * (x - self.d1);
+            self.d2 += self.det_a * (self.d1 - self.d2);
+            let a = self.d2.abs();
+            self.env = if a > self.env { self.env + 0.1 * (a - self.env) } else { self.env * self.env_rel };
+            let thr = 0.15 * self.env + 1e-4;
+            if !self.high && self.d2 > thr {
+                self.high = true;
+                self.flip = -self.flip; // one toggle per period: half the frequency
+            } else if self.high && self.d2 < -thr {
+                self.high = false;
+            }
+            self.l1 += self.out_a * (self.flip * self.env - self.l1);
+            self.l2 += self.out_a * (self.l1 - self.l2);
+            *v = x * self.dry + self.l2 * self.sub;
+        }
+    }
+
+    live_set!();
+}
+
 /// A streaming cubic (Catmull-Rom) resampler, for models trained at another rate than the
 /// audio device runs at. It adds about two input samples of delay.
 struct Resample {
@@ -2373,6 +2449,23 @@ mod tests {
         assert!((out.len() as f32 - 48000.0).abs() < 4.0, "{} samples", out.len());
         let r = rms(&out[1000..]);
         assert!((r - 0.5 / 2f32.sqrt()).abs() < 0.01, "rms {r}");
+    }
+
+    #[test]
+    fn octave_goes_down_one_octave() {
+        // count rising zero crossings: the wet signal alone should have half as many
+        let crossings = |x: &[f32]| x.windows(2).filter(|w| w[0] <= 0.0 && w[1] > 0.0).count();
+        for f in [110.0f32, 196.0, 330.0] {
+            let input = sine(f, 1.5);
+            let out = run_chain(&[("octave", "sub=1,dry=0")], &input);
+            let from = (SR * 0.5) as usize;
+            let (a, b) = (crossings(&input[from..]) as f32, crossings(&out[from..]) as f32);
+            assert!((b / a - 0.5).abs() < 0.05, "{f} Hz: {a} crossings in, {b} out");
+            assert!(rms(&out[from..]) > 0.1, "{f} Hz: sub too quiet");
+        }
+        // silence stays silent
+        let quiet = run_chain(&[("octave", "")], &vec![0.0; 4800]);
+        assert!(quiet.iter().all(|v| *v == 0.0));
     }
 
     #[test]
