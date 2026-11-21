@@ -3,6 +3,7 @@
 
 pub mod chain;
 pub mod effects;
+pub mod listen;
 pub mod live;
 pub mod nam;
 pub mod params;

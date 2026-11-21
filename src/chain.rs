@@ -9,7 +9,8 @@ use crate::params::{Spec, Value};
 use crate::effects::PitchTracker;
 use crate::tools::{LoopCmd, LoopState, Looper, Metronome};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed};
-use std::sync::{mpsc, Arc};
+use crate::listen::{Analysis, ListenTap};
+use std::sync::{mpsc, Arc, Mutex};
 
 /// Levels and dropout counter shared with the UI.
 /// How many per-effect level meters exist (chain positions beyond this are not metered).
@@ -29,6 +30,8 @@ pub struct Meters {
     pitch: AtomicU32,
     tuner_on: AtomicBool,
     tuner_mute: AtomicBool,
+    listen_on: AtomicBool,
+    analysis: Mutex<Analysis>,
 }
 
 impl Default for Meters {
@@ -46,6 +49,8 @@ impl Default for Meters {
             pitch: AtomicU32::default(),
             tuner_on: AtomicBool::default(),
             tuner_mute: AtomicBool::default(),
+            listen_on: AtomicBool::default(),
+            analysis: Mutex::default(),
             slots: (0..SLOT_METERS).map(|_| AtomicU32::default()).collect(),
         }
     }
@@ -114,6 +119,31 @@ impl Meters {
         }
     }
 
+    /// Switch the Listener (tempo, key and chord analysis of the dry input) on or off.
+    pub fn set_listening(&self, on: bool) {
+        self.listen_on.store(on, Relaxed);
+        if !on {
+            if let Ok(mut a) = self.analysis.lock() {
+                *a = Analysis::default();
+            }
+        }
+    }
+
+    pub fn listening(&self) -> bool {
+        self.listen_on.load(Relaxed)
+    }
+
+    /// The latest Listener snapshot.
+    pub fn analysis(&self) -> Analysis {
+        self.analysis.lock().map(|a| a.clone()).unwrap_or_default()
+    }
+
+    pub(crate) fn publish_analysis(&self, a: &Analysis) {
+        if let Ok(mut g) = self.analysis.lock() {
+            *g = a.clone();
+        }
+    }
+
     pub fn xruns(&self) -> u32 {
         self.xruns.load(Relaxed)
     }
@@ -171,6 +201,7 @@ pub struct Chain {
     metronome: Option<Metronome>,
     looper: Option<Looper>,
     tuner: Option<PitchTracker>,
+    listen: Option<ListenTap>,
 }
 
 fn db(x: f32) -> f32 {
@@ -182,7 +213,7 @@ impl Chain {
         // Spare capacity so live inserts never reallocate on the audio thread.
         let mut slots = Vec::with_capacity(specs.len() + 64);
         slots.extend(specs.iter().enumerate().map(|(i, s)| Slot::new(i as u64, s, sr)));
-        Self { slots, in_gain: db(input_db), out_gain: db(output_db), rx: None, meters: Arc::default(), metronome: None, looper: None, tuner: None }
+        Self { slots, in_gain: db(input_db), out_gain: db(output_db), rx: None, meters: Arc::default(), metronome: None, looper: None, tuner: None, listen: None }
     }
 
     /// A chain plus the handle that edits it while it runs. Slot ids are the spec indices.
@@ -193,6 +224,7 @@ impl Chain {
         chain.metronome = Some(Metronome::new(sr));
         chain.looper = Some(Looper::new(sr, 60.0));
         chain.tuner = Some(PitchTracker::new(sr));
+        chain.listen = Some(crate::listen::spawn(sr, chain.meters.clone()));
         let control = Control { tx, meters: chain.meters.clone(), sample_rate: sr };
         (chain, control)
     }
@@ -279,6 +311,9 @@ impl Chain {
                 let f = t.detect().unwrap_or(0.0);
                 self.meters.pitch.store(f.to_bits(), Relaxed);
             }
+        }
+        if let (Some(t), true) = (&mut self.listen, self.meters.listen_on.load(Relaxed)) {
+            t.push(buf);
         }
         for (i, slot) in self.slots.iter_mut().enumerate() {
             if !slot.bypass {

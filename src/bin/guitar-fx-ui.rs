@@ -8,6 +8,7 @@ use eframe::egui;
 use guitar_fx_core::chain::{Cmd, Slot};
 use guitar_fx_core::tools::{LoopCmd, LoopState};
 use guitar_fx_core::effects::build;
+use guitar_fx_core::listen;
 use guitar_fx_core::live::{self, LiveOpts, Running, DEFAULT_BUFFER};
 use guitar_fx_core::params::{EffectDef, Kind, Spec, Value, EFFECTS, EXPERIMENTAL, ZEN};
 use guitar_fx_core::preset::{Preset, BUILTIN};
@@ -73,6 +74,7 @@ struct App {
     taps: Vec<Instant>,
     last_beat: (u32, Instant, bool),
     tuner_on: bool,
+    listen_on: bool,
     tuner_mute: bool,
     tuner_hz: f32,
     tuner_seen: Instant,
@@ -115,6 +117,7 @@ impl App {
             taps: Vec::new(),
             last_beat: (0, Instant::now(), false),
             tuner_on: false,
+            listen_on: false,
             tuner_mute: true,
             tuner_hz: 0.0,
             tuner_seen: Instant::now(),
@@ -244,6 +247,7 @@ impl App {
                     }
                 }
                 running.control.meters.set_tuner(self.tuner_on, self.tuner_mute);
+                running.control.meters.set_listening(self.listen_on);
                 running.control.send(Cmd::Metronome { on: self.metro_on, bpm: self.bpm, beats: self.beats, volume: self.metro_vol });
                 running.control.send(Cmd::Looper(LoopCmd::Level(self.loop_vol)));
                 self.status = format!("{} → {}", running.input_name, running.output_name);
@@ -722,6 +726,12 @@ impl eframe::App for App {
                     self.tuner_on = !self.tuner_on;
                     tuner_changed = true;
                 }
+                if ui.selectable_label(self.listen_on, "Listener").on_hover_text("Show the tempo, key and chord of what you play").clicked() {
+                    self.listen_on = !self.listen_on;
+                    if let Some(r) = &self.running {
+                        r.control.meters.set_listening(self.listen_on);
+                    }
+                }
             });
             ui.add_space(2.0);
         });
@@ -796,6 +806,84 @@ impl eframe::App for App {
             if mute_changed {
                 if let Some(r) = &self.running {
                     r.control.meters.set_tuner(self.tuner_on, self.tuner_mute);
+                }
+            }
+            ctx.request_repaint_after(Duration::from_millis(50));
+        }
+
+        if self.listen_on {
+            let mut open = true;
+            let a = self.running.as_ref().map(|r| r.control.meters.analysis()).unwrap_or_default();
+            let running = self.running.is_some();
+            egui::Window::new("Listener").open(&mut open).collapsible(false).resizable(false).show(&ctx, |ui| {
+                ui.set_min_width(300.0);
+                if !running {
+                    ui.label("Press Start so the listener can hear the guitar.");
+                }
+                let dim = egui::Color32::GRAY;
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.weak("Chord");
+                        let (txt, col) = match a.chord {
+                            Some(c) => (c.name(), egui::Color32::from_rgb(120, 200, 255)),
+                            None => ("—".to_string(), dim),
+                        };
+                        ui.label(egui::RichText::new(txt).size(40.0).strong().color(col));
+                    });
+                    ui.add_space(20.0);
+                    ui.vertical(|ui| {
+                        ui.weak("Key");
+                        match a.key {
+                            Some(k) => {
+                                ui.label(egui::RichText::new(k.name()).size(24.0).strong());
+                                let sure = if k.conf > 0.6 && k.tonic_conf > 0.5 { "clear" } else if k.conf > 0.3 { "fairly sure" } else { "unsure" };
+                                ui.weak(format!("{sure}  ·  notes of {} major", listen::NOTE_NAMES[k.scale_root() as usize]));
+                            }
+                            None => {
+                                ui.label(egui::RichText::new("—").size(24.0).color(dim));
+                                ui.weak("needs a few seconds of playing");
+                            }
+                        }
+                    });
+                });
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    let known = a.tempo > 0.0 && a.tempo_conf >= 0.15;
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::hover());
+                    let pulse = if known { (1.0 - a.beat_phase * 3.0).clamp(0.0, 1.0) } else { 0.0 };
+                    let c = egui::Color32::from_rgb(80 + (175.0 * pulse) as u8, 80 + (110.0 * pulse) as u8, 80);
+                    ui.painter().circle_filled(rect.center(), 6.0 + 5.0 * pulse, c);
+                    if known {
+                        ui.label(egui::RichText::new(format!("{:.0} BPM", a.tempo)).size(24.0).strong());
+                    } else if a.tempo > 0.0 {
+                        ui.label(egui::RichText::new(format!("~{:.0} BPM", a.tempo)).size(24.0).color(dim));
+                        ui.weak("(not steady yet)");
+                    } else {
+                        ui.label(egui::RichText::new("—").size(24.0).color(dim));
+                        ui.weak("play a steady rhythm");
+                    }
+                });
+                ui.add_space(6.0);
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(300.0, 54.0), egui::Sense::hover());
+                let p = ui.painter();
+                p.rect_filled(rect, 6.0, egui::Color32::from_black_alpha(90));
+                let w = rect.width() / 12.0;
+                for i in 0..12 {
+                    let h = (a.chroma[i].clamp(0.0, 1.0) * (rect.height() - 16.0)).max(1.0);
+                    let x = rect.left() + i as f32 * w;
+                    let in_key = a.key.is_some_and(|k| {
+                        let rel = (i + 12 - k.scale_root() as usize) % 12;
+                        [0, 2, 4, 5, 7, 9, 11].contains(&rel)
+                    });
+                    let col = if in_key { egui::Color32::from_rgb(120, 200, 255) } else { egui::Color32::from_gray(110) };
+                    p.rect_filled(egui::Rect::from_min_max(egui::pos2(x + 3.0, rect.bottom() - 14.0 - h), egui::pos2(x + w - 3.0, rect.bottom() - 14.0)), 2.0, col);
+                    p.text(egui::pos2(x + w / 2.0, rect.bottom() - 7.0), egui::Align2::CENTER_CENTER, listen::NOTE_NAMES[i], egui::FontId::proportional(9.0), egui::Color32::from_gray(170));
+                }
+            });
+            if !open {
+                self.listen_on = false;
+                if let Some(r) = &self.running {
+                    r.control.meters.set_listening(false);
                 }
             }
             ctx.request_repaint_after(Duration::from_millis(50));

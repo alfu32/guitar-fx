@@ -99,7 +99,11 @@ time (guitar down to low E), and it degrades on chords.
 A second bar under the controls holds a **metronome** (bpm, beats per bar, click volume, tap
 tempo, a light that flashes on every beat), a **looper** (Record, then Close loop, Overdub,
 Stop, Clear; it records what comes out of the chain, up to 60 s) and a **tuner** (note, cents
-and a needle; the output can be muted while tuning). Neural Amp Modeler captures (`.nam`, from [tone3000.com](https://www.tone3000.com) and elsewhere)
+and a needle; the output can be muted while tuning). The **Listener** window shows what you are
+playing in musical terms: the chord, the key or mode (with how sure it is), the tempo with a beat light, and
+the 12 pitch classes. It listens to the dry guitar on a separate thread, so it adds no delay; it needs a few
+seconds of playing, works best on steady playing, and reads a single line or strummed chords (the key is a
+guess between a mode and its relative modes, so a C major and an A minor tune can swap). Neural Amp Modeler captures (`.nam`, from [tone3000.com](https://www.tone3000.com) and elsewhere)
 go in `~/.config/guitar-fx/nam/` (`%APPDATA%\guitar-fx\nam`), folders allowed, and appear in the Neural Amp
 card. They are not bundled: each capture carries its own licence, so check it before you share one.
 Files in the current "slimmable" format (a full and a lite network in one file) and the older WaveNet
