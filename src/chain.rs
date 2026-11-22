@@ -9,7 +9,7 @@ use crate::params::{Spec, Value};
 use crate::effects::PitchTracker;
 use crate::tools::{LoopCmd, LoopState, Looper, Metronome};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed};
-use crate::band::{Band, BandSettings};
+use crate::band::{Band, BandCmd, BandSettings, Song};
 use crate::listen::{Analysis, ListenTap};
 use std::sync::{mpsc, Arc, Mutex};
 
@@ -21,8 +21,10 @@ pub(crate) struct Heard {
     pub tempo: f32,
     pub tempo_conf: f32,
     pub beats: u32,
-    pub chord_root: Option<u8>,
-    pub key_root: Option<u8>,
+    pub onsets: u32,
+    /// (root, quality)
+    pub chord: Option<(u8, u8)>,
+    pub key: Option<u8>,
 }
 
 pub struct Meters {
@@ -47,6 +49,10 @@ pub struct Meters {
     heard_beats: AtomicU32,
     heard_chord: AtomicU32,
     heard_key: AtomicU32,
+    heard_onsets: AtomicU32,
+    band_phase: AtomicU32,
+    band_beat: AtomicU32,
+    band_song: Mutex<Option<Song>>,
 }
 
 impl Default for Meters {
@@ -72,6 +78,10 @@ impl Default for Meters {
             heard_beats: AtomicU32::default(),
             heard_chord: AtomicU32::default(),
             heard_key: AtomicU32::default(),
+            heard_onsets: AtomicU32::default(),
+            band_phase: AtomicU32::default(),
+            band_beat: AtomicU32::default(),
+            band_song: Mutex::default(),
             slots: (0..SLOT_METERS).map(|_| AtomicU32::default()).collect(),
         }
     }
@@ -175,7 +185,8 @@ impl Meters {
         self.heard_tempo.store(a.tempo.to_bits(), Relaxed);
         self.heard_conf.store(a.tempo_conf.to_bits(), Relaxed);
         self.heard_beats.store(a.beats, Relaxed);
-        self.heard_chord.store(a.chord.map_or(0, |c| 0x100 | c.root as u32), Relaxed);
+        self.heard_chord.store(a.chord.map_or(0, |c| 0x1000 | (c.quality as u32) << 8 | c.root as u32), Relaxed);
+        self.heard_onsets.store(a.onsets, Relaxed);
         self.heard_key.store(a.key.map_or(0, |k| 0x100 | k.root as u32), Relaxed);
     }
 
@@ -186,8 +197,32 @@ impl Meters {
             tempo: f32::from_bits(self.heard_tempo.load(Relaxed)),
             tempo_conf: f32::from_bits(self.heard_conf.load(Relaxed)),
             beats: self.heard_beats.load(Relaxed),
-            chord_root: (c & 0x100 != 0).then_some((c & 0xff) as u8),
-            key_root: (k & 0x100 != 0).then_some((k & 0xff) as u8),
+            onsets: self.heard_onsets.load(Relaxed),
+            chord: (c & 0x1000 != 0).then_some(((c & 0xff) as u8, ((c >> 8) & 0xf) as u8)),
+            key: (k & 0x100 != 0).then_some((k & 0xff) as u8),
+        }
+    }
+
+    /// Where the band is: (phase, position). Phase: 0 free, 1 count-in, 2 learning, 3 looping,
+    /// 4 learning failed. Position is the beat in the loop (or in the learning take; negative
+    /// during the count-in).
+    pub fn band_state(&self) -> (u32, i32) {
+        (self.band_phase.load(Relaxed), self.band_beat.load(Relaxed) as i32)
+    }
+
+    pub(crate) fn set_band_state(&self, phase: u32, beat: i32) {
+        self.band_phase.store(phase, Relaxed);
+        self.band_beat.store(beat as u32, Relaxed);
+    }
+
+    /// The progression the band has learned.
+    pub fn song(&self) -> Option<Song> {
+        self.band_song.lock().ok().and_then(|s| s.clone())
+    }
+
+    pub(crate) fn set_song(&self, song: Option<Song>) {
+        if let Ok(mut s) = self.band_song.lock() {
+            *s = song;
         }
     }
 
@@ -225,6 +260,7 @@ pub enum Cmd {
     Metronome { on: bool, bpm: f32, beats: u32, volume: f32 },
     Looper(LoopCmd),
     Band(BandSettings),
+    BandLearn(BandCmd),
 }
 
 #[derive(Clone)]
@@ -329,6 +365,11 @@ impl Chain {
             Cmd::Band(b) => {
                 if let Some(band) = &mut self.band {
                     band.configure(b);
+                }
+            }
+            Cmd::BandLearn(c) => {
+                if let Some(band) = &mut self.band {
+                    band.command(c, &self.meters);
                 }
             }
             Cmd::Looper(c) => {

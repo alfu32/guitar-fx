@@ -101,9 +101,13 @@ tempo, a light that flashes on every beat), a **looper** (Record, then Close loo
 Stop, Clear; it records what comes out of the chain, up to 60 s) and a **tuner** (note, cents
 and a needle; the output can be muted while tuning). The **Listener** window shows what you are
 playing in musical terms: the chord, the key or mode (with how sure it is), the tempo with a beat light, and
-the 12 pitch classes. The **Band** window starts a synthesised drummer and bassist (three styles) that keep
-the tempo of your playing, lock onto your beats and play the root of the chord the Listener names; no samples
-are used. The bar starts when you press Start or Restart, because the downbeat is not detected yet. The Listener
+the 12 pitch classes. The **Band** window starts a synthesised drummer and bassist (nine styles: rock, four on the floor,
+half-time, funk, reggae, ballad, bossa, country, punk; no samples are used) in two phases. **1 · Learn**:
+set a tempo and a number of bars, press Learn; after a count-in bar and with a quiet click for time, play
+your progression; the band writes down the chord of every beat and where your strums fall. **2 · Play over
+it**: the band loops what it learned and is locked: it no longer listens, so the progression and the rhythm
+cannot drift. Until something is learned the band follows you (tempo and beats), or, with "Follow my tempo"
+off, keeps a fixed rhythm while the bass still follows your chords. The Listener
 listens to the dry guitar on a separate thread, so it adds no delay; it needs a few
 seconds of playing, works best on steady playing, and reads a single line or strummed chords (the key is a
 guess between a mode and its relative modes, so a C major and an A minor tune can swap). Neural Amp Modeler captures (`.nam`, from [tone3000.com](https://www.tone3000.com) and elsewhere)

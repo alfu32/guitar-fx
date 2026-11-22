@@ -5,7 +5,7 @@
 mod theme;
 
 use eframe::egui;
-use guitar_fx_core::band::{BandSettings, STYLES};
+use guitar_fx_core::band::{BandCmd, BandSettings, STYLES};
 use guitar_fx_core::chain::{Cmd, Slot};
 use guitar_fx_core::tools::{LoopCmd, LoopState};
 use guitar_fx_core::effects::build;
@@ -78,6 +78,7 @@ struct App {
     listen_on: bool,
     band_open: bool,
     band: BandSettings,
+    learn_bars: u32,
     tuner_mute: bool,
     tuner_hz: f32,
     tuner_seen: Instant,
@@ -123,6 +124,7 @@ impl App {
             listen_on: false,
             band_open: false,
             band: BandSettings::default(),
+            learn_bars: 4,
             tuner_mute: true,
             tuner_hz: 0.0,
             tuner_seen: Instant::now(),
@@ -252,7 +254,7 @@ impl App {
                     }
                 }
                 running.control.meters.set_tuner(self.tuner_on, self.tuner_mute);
-                running.control.meters.set_listening(self.listen_on || (self.band.on && self.band.follow));
+                running.control.meters.set_listening(self.listen_on || self.band.on);
                 running.control.send(Cmd::Band(self.band));
                 running.control.send(Cmd::Metronome { on: self.metro_on, bpm: self.bpm, beats: self.beats, volume: self.metro_vol });
                 running.control.send(Cmd::Looper(LoopCmd::Level(self.loop_vol)));
@@ -283,7 +285,7 @@ impl App {
     /// The Listener runs while its window is open or while the band is following the guitar.
     fn sync_listening(&self) {
         if let Some(r) = &self.running {
-            r.control.meters.set_listening(self.listen_on || (self.band.on && self.band.follow));
+            r.control.meters.set_listening(self.listen_on || self.band.on);
         }
     }
 
@@ -909,10 +911,15 @@ impl eframe::App for App {
         if self.band_open {
             let mut open = true;
             let mut b = self.band;
+            let mut learn: Option<BandCmd> = None;
             let heard = self.running.as_ref().map(|r| r.control.meters.analysis());
+            let (phase, beat) = self.running.as_ref().map_or((0, 0), |r| r.control.meters.band_state());
+            let song = self.running.as_ref().and_then(|r| r.control.meters.song());
             let running = self.running.is_some();
+            let bars = self.learn_bars;
+            let mut new_bars = bars;
             egui::Window::new("Band").open(&mut open).collapsible(false).resizable(false).show(&ctx, |ui| {
-                ui.set_min_width(300.0);
+                ui.set_min_width(330.0);
                 if !running {
                     ui.label("Press Start first.");
                 }
@@ -920,13 +927,7 @@ impl eframe::App for App {
                     if ui.selectable_label(b.on, if b.on { "■ Playing" } else { "▶ Start the band" }).clicked() {
                         b.on = !b.on;
                     }
-                    if ui.button("Forget").on_hover_text("Forget the tempo, key and chord it learned and start over").clicked() {
-                        b.restart = true;
-                        if let Some(r) = &self.running {
-                            r.control.meters.reset_listener();
-                        }
-                    }
-                    if ui.add_enabled(b.on, egui::Button::new("1  Restart bar")).on_hover_text("Press on your downbeat to start the bar here").clicked() {
+                    if ui.add_enabled(b.on && phase != 1 && phase != 2, egui::Button::new("1  Restart bar")).on_hover_text("Press on your downbeat to start the bar here").clicked() {
                         b.restart = true;
                     }
                 });
@@ -935,31 +936,86 @@ impl eframe::App for App {
                         ui.selectable_value(&mut b.style, i, *n);
                     }
                 });
-                ui.checkbox(&mut b.follow, "Follow my tempo").on_hover_text("Keep time with the beat of the guitar; otherwise play at the tempo below");
-                ui.horizontal(|ui| {
-                    ui.label(if b.follow { "Starting tempo" } else { "Tempo" });
-                    ui.add(egui::DragValue::new(&mut b.bpm).range(40.0..=220.0).suffix(" bpm"));
-                });
                 ui.add(egui::Slider::new(&mut b.drums, 0.0..=1.0).text("Drums"));
                 ui.add(egui::Slider::new(&mut b.bass, 0.0..=1.0).text("Bass"));
-                if b.on {
-                    if let Some(a) = &heard {
-                        let chord = a.chord.map_or("—".to_string(), |c| c.name());
-                        let key = a.key.map_or("—".to_string(), |k| k.name());
-                        ui.weak(format!("bass on {chord}  ·  key {key}"));
-                        if b.follow && !(a.tempo > 0.0 && a.tempo_conf >= 0.15) {
-                            ui.weak("waiting to hear a steady beat — playing at the starting tempo");
+                ui.separator();
+
+                // phase 1: learn
+                ui.label(egui::RichText::new("1 · Learn what you play").strong());
+                ui.horizontal(|ui| {
+                    ui.label("Tempo");
+                    ui.add(egui::DragValue::new(&mut b.bpm).range(40.0..=220.0).suffix(" bpm"));
+                    ui.label("Bars");
+                    ui.add(egui::DragValue::new(&mut new_bars).range(1..=8));
+                });
+                ui.horizontal(|ui| {
+                    let busy = phase == 1 || phase == 2;
+                    if ui.add_enabled(running && !busy, egui::Button::new("● Learn")).on_hover_text("One bar of count-in, then it listens for the bars above while a quiet click keeps time").clicked() {
+                        b.on = true;
+                        learn = Some(BandCmd::Learn { bars: bars.max(1) });
+                    }
+                    if ui.add_enabled(song.is_some() || busy, egui::Button::new("✕ Clear")).on_hover_text("Forget the loop and go back to following you").clicked() {
+                        learn = Some(BandCmd::Clear);
+                    }
+                });
+                match phase {
+                    1 => {
+                        ui.label(egui::RichText::new(format!("Count-in … {}", (beat + 5).clamp(1, 4))).size(20.0).strong());
+                    }
+                    2 => {
+                        let total = bars.max(1) as i32 * 4;
+                        ui.add(egui::ProgressBar::new((beat as f32 / total as f32).clamp(0.0, 1.0)).text(format!("Play your progression — bar {} of {}, beat {}", beat.div_euclid(4) + 1, bars, beat.rem_euclid(4) + 1)));
+                    }
+                    4 => {
+                        ui.colored_label(egui::Color32::from_rgb(235, 130, 80), "I did not hear any chords. Strum something clearly and try again.");
+                    }
+                    _ => {}
+                }
+                ui.separator();
+
+                // phase 2: play
+                ui.label(egui::RichText::new("2 · Play over it").strong());
+                if let Some(song) = &song {
+                    ui.label(egui::RichText::new(song.text()).size(22.0).strong().color(egui::Color32::from_rgb(120, 200, 255)));
+                    ui.weak(format!("{:.0} bpm · looping and locked: it no longer follows what you play", song.bpm));
+                    ui.checkbox(&mut b.copy_rhythm, "Bass plays where I played");
+                } else {
+                    ui.weak("Nothing learned yet. Until then the band follows you:");
+                    ui.checkbox(&mut b.follow, "Follow my tempo").on_hover_text("Off = the rhythm is fixed at the tempo above, and only the bass follows your chords");
+                    if !b.follow {
+                        if let Some(a) = &heard {
+                            if a.tempo > 0.0 && a.tempo_conf >= 0.15 && ui.button(format!("Fix the rhythm at {:.0} bpm (what I hear)", a.tempo)).clicked() {
+                                b.bpm = a.tempo.round().clamp(40.0, 220.0);
+                            }
+                        }
+                        ui.weak("Fixed rhythm: the bass still follows your chords.");
+                    }
+                    if b.on && phase == 0 {
+                        if let Some(a) = &heard {
+                            let chord = a.chord.map_or("—".to_string(), |c| c.name());
+                            ui.weak(format!("bass on {chord}"));
+                            if b.follow && !(a.tempo > 0.0 && a.tempo_conf >= 0.15) {
+                                ui.weak("waiting to hear a steady beat — playing at the tempo above");
+                            }
                         }
                     }
                 }
-                ui.weak("The bar starts when you press Start (or Restart); it does not know your downbeat yet.");
+                if ui.button("Forget what I played").on_hover_text("Reset the Listener: key, tempo and chord").clicked() {
+                    if let Some(r) = &self.running {
+                        r.control.meters.reset_listener();
+                    }
+                }
             });
+            self.learn_bars = new_bars;
             if !open {
                 self.band_open = false;
             }
-            if b != self.band || b.restart {
+            if b != self.band || b.restart || learn.is_some() {
                 self.band = BandSettings { restart: false, ..b };
                 self.send(Cmd::Band(b));
+                if let Some(c) = learn {
+                    self.send(Cmd::BandLearn(c));
+                }
                 self.sync_listening();
             }
             ctx.request_repaint_after(Duration::from_millis(100));

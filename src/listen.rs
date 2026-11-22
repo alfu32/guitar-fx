@@ -97,6 +97,8 @@ pub struct Analysis {
     pub beat_phase: f32,
     /// Counts up on every beat.
     pub beats: u32,
+    /// Counts up on every note or strum the guitar starts.
+    pub onsets: u32,
     pub key: Option<Key>,
     pub chord: Option<Chord>,
     /// Fast pitch-class energy (C..B), the strongest scaled to 1.
@@ -283,6 +285,8 @@ pub struct Listener {
     e_n: usize,
     prev_lg: f32,
     onset: VecDeque<f32>,
+    peak_flux: f32,
+    cool: u32,
     frames: u64,
     since_tempo: usize,
     period: f32,
@@ -318,6 +322,8 @@ impl Listener {
             e_n: 0,
             prev_lg: 0.0,
             onset: VecDeque::new(),
+            peak_flux: 0.0,
+            cool: 0,
             frames: 0,
             since_tempo: 0,
             period: 0.0,
@@ -463,6 +469,14 @@ impl Listener {
 
     fn env_frame(&mut self, flux: f32) {
         self.frames += 1;
+        // a note or strum starts where the level jumps well above what has been playing lately
+        self.peak_flux = (self.peak_flux * 0.997).max(flux);
+        if self.cool > 0 {
+            self.cool -= 1;
+        } else if flux > 0.35 * self.peak_flux && flux > 0.04 {
+            self.out.onsets = self.out.onsets.wrapping_add(1);
+            self.cool = 6;
+        }
         let cap = (HISTORY_SECS * self.env_rate) as usize;
         self.onset.push_back(flux);
         if self.onset.len() > cap {
@@ -721,6 +735,13 @@ mod tests {
             assert!((a.tempo - bpm).abs() / bpm < 0.04, "{bpm} bpm (offbeats {off}) heard as {}", a.tempo);
             assert!(a.tempo_conf > 0.15, "confidence {}", a.tempo_conf);
         }
+    }
+
+    #[test]
+    fn counts_the_notes_you_start() {
+        let a = run(&rhythm(100.0, 12.0, false), 64);
+        // 100 bpm for 11.5 s of beats is about 19 notes
+        assert!((17..=22).contains(&a.onsets), "{} onsets", a.onsets);
     }
 
     #[test]
