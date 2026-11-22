@@ -5,7 +5,7 @@
 mod theme;
 
 use eframe::egui;
-use guitar_fx_core::band::{BandCmd, BandSettings, STYLES};
+use guitar_fx_core::band::{BandCmd, BandSettings, Snap, Track, BASS_STYLES, CHORD_TYPES, GUITAR_STYLES, RHYTHMS};
 use guitar_fx_core::chain::{Cmd, Slot};
 use guitar_fx_core::tools::{LoopCmd, LoopState};
 use guitar_fx_core::effects::build;
@@ -78,7 +78,6 @@ struct App {
     listen_on: bool,
     band_open: bool,
     band: BandSettings,
-    learn_bars: u32,
     tuner_mute: bool,
     tuner_hz: f32,
     tuner_seen: Instant,
@@ -124,7 +123,6 @@ impl App {
             listen_on: false,
             band_open: false,
             band: BandSettings::default(),
-            learn_bars: 4,
             tuner_mute: true,
             tuner_hz: 0.0,
             tuner_seen: Instant::now(),
@@ -255,7 +253,7 @@ impl App {
                 }
                 running.control.meters.set_tuner(self.tuner_on, self.tuner_mute);
                 running.control.meters.set_listening(self.listen_on || self.band.on);
-                running.control.send(Cmd::Band(self.band));
+                running.control.send(Cmd::Band(BandCmd::Settings(self.band)));
                 running.control.send(Cmd::Metronome { on: self.metro_on, bpm: self.bpm, beats: self.beats, volume: self.metro_vol });
                 running.control.send(Cmd::Looper(LoopCmd::Level(self.loop_vol)));
                 self.status = format!("{} → {}", running.input_name, running.output_name);
@@ -911,114 +909,108 @@ impl eframe::App for App {
         if self.band_open {
             let mut open = true;
             let mut b = self.band;
-            let mut learn: Option<BandCmd> = None;
-            let heard = self.running.as_ref().map(|r| r.control.meters.analysis());
-            let (phase, beat) = self.running.as_ref().map_or((0, 0), |r| r.control.meters.band_state());
-            let song = self.running.as_ref().and_then(|r| r.control.meters.song());
+            let mut cmds: Vec<BandCmd> = Vec::new();
+            let (pos, (rec_track, rec_stage), ev) = match &self.running {
+                Some(r) => (r.control.meters.band_pos(), r.control.meters.band_rec(), r.control.meters.band_events()),
+                None => (0.0, (0, 0), Default::default()),
+            };
             let running = self.running.is_some();
-            let bars = self.learn_bars;
-            let mut new_bars = bars;
+            let bpb = RHYTHMS[b.rhythm.min(RHYTHMS.len() - 1)].beats.max(1) as f32;
             egui::Window::new("Band").open(&mut open).collapsible(false).resizable(false).show(&ctx, |ui| {
-                ui.set_min_width(330.0);
+                ui.set_min_width(380.0);
                 if !running {
                     ui.label("Press Start first.");
                 }
+                // ---- the rhythm
+                ui.label(egui::RichText::new("Rhythm").strong());
                 ui.horizontal(|ui| {
-                    if ui.selectable_label(b.on, if b.on { "■ Playing" } else { "▶ Start the band" }).clicked() {
+                    if ui.add_enabled(running, egui::Button::new(if b.on { "■ Stop" } else { "▶ Start" }).selected(b.on)).clicked() {
                         b.on = !b.on;
                     }
-                    if ui.add_enabled(b.on && phase != 1 && phase != 2, egui::Button::new("1  Restart bar")).on_hover_text("Press on your downbeat to start the bar here").clicked() {
-                        b.restart = true;
+                    if ui.add_enabled(b.on, egui::Button::new("↺")).on_hover_text("Back to the start of the loop").clicked() {
+                        cmds.push(BandCmd::Restart);
                     }
+                    ui.add(egui::DragValue::new(&mut b.bpm).range(40.0..=240.0).suffix(" bpm"));
+                    ui.add(egui::DragValue::new(&mut b.bars).range(1..=8).suffix(" bars"));
                 });
-                egui::ComboBox::from_label("Style").selected_text(STYLES[b.style.min(STYLES.len() - 1)]).show_ui(ui, |ui| {
-                    for (i, n) in STYLES.iter().enumerate() {
-                        ui.selectable_value(&mut b.style, i, *n);
+                egui::ComboBox::from_id_salt("rhythm").width(220.0).selected_text(RHYTHMS[b.rhythm.min(RHYTHMS.len() - 1)].name).show_ui(ui, |ui| {
+                    for (i, r) in RHYTHMS.iter().enumerate() {
+                        ui.selectable_value(&mut b.rhythm, i, r.name);
                     }
                 });
                 ui.add(egui::Slider::new(&mut b.drums, 0.0..=1.0).text("Drums"));
-                ui.add(egui::Slider::new(&mut b.bass, 0.0..=1.0).text("Bass"));
-                ui.separator();
-
-                // phase 1: learn
-                ui.label(egui::RichText::new("1 · Learn what you play").strong());
-                ui.horizontal(|ui| {
-                    ui.label("Tempo");
-                    ui.add(egui::DragValue::new(&mut b.bpm).range(40.0..=220.0).suffix(" bpm"));
-                    ui.label("Bars");
-                    ui.add(egui::DragValue::new(&mut new_bars).range(1..=8));
-                });
-                ui.horizontal(|ui| {
-                    let busy = phase == 1 || phase == 2;
-                    if ui.add_enabled(running && !busy, egui::Button::new("● Learn")).on_hover_text("One bar of count-in, then it listens for the bars above while a quiet click keeps time").clicked() {
-                        b.on = true;
-                        learn = Some(BandCmd::Learn { bars: bars.max(1) });
-                    }
-                    if ui.add_enabled(song.is_some() || busy, egui::Button::new("✕ Clear")).on_hover_text("Forget the loop and go back to following you").clicked() {
-                        learn = Some(BandCmd::Clear);
-                    }
-                });
-                match phase {
-                    1 => {
-                        ui.label(egui::RichText::new(format!("Count-in … {}", (beat + 5).clamp(1, 4))).size(20.0).strong());
-                    }
-                    2 => {
-                        let total = bars.max(1) as i32 * 4;
-                        ui.add(egui::ProgressBar::new((beat as f32 / total as f32).clamp(0.0, 1.0)).text(format!("Play your progression — bar {} of {}, beat {}", beat.div_euclid(4) + 1, bars, beat.rem_euclid(4) + 1)));
-                    }
-                    4 => {
-                        ui.colored_label(egui::Color32::from_rgb(235, 130, 80), "I did not hear any chords. Strum something clearly and try again.");
-                    }
-                    _ => {}
+                if b.on {
+                    let bar = (pos / bpb).floor() as i32 + 1;
+                    let beat = (pos % bpb).floor() as i32 + 1;
+                    ui.add(egui::ProgressBar::new((pos / (b.bars as f32 * bpb)).clamp(0.0, 1.0)).desired_width(340.0).text(format!("bar {bar} of {} · beat {beat}", b.bars)));
                 }
                 ui.separator();
 
-                // phase 2: play
-                ui.label(egui::RichText::new("2 · Play over it").strong());
-                if let Some(song) = &song {
-                    ui.label(egui::RichText::new(song.text()).size(22.0).strong().color(egui::Color32::from_rgb(120, 200, 255)));
-                    ui.weak(format!("{:.0} bpm · looping and locked: it no longer follows what you play", song.bpm));
-                    ui.checkbox(&mut b.copy_rhythm, "Bass plays where I played");
-                } else {
-                    ui.weak("Nothing learned yet. Until then the band follows you:");
-                    ui.checkbox(&mut b.follow, "Follow my tempo").on_hover_text("Off = the rhythm is fixed at the tempo above, and only the bass follows your chords");
-                    if !b.follow {
-                        if let Some(a) = &heard {
-                            if a.tempo > 0.0 && a.tempo_conf >= 0.15 && ui.button(format!("Fix the rhythm at {:.0} bpm (what I hear)", a.tempo)).clicked() {
-                                b.bpm = a.tempo.round().clamp(40.0, 220.0);
-                            }
+                // ---- the two played parts
+                let mut part = |ui: &mut egui::Ui, track: Track, title: &str, styles: &[(&str, &str)], style: &mut usize, vol: &mut f32| {
+                    let mine = rec_track == track as u32;
+                    ui.label(egui::RichText::new(title).strong());
+                    egui::ComboBox::from_id_salt(title).width(220.0).selected_text(styles[(*style).min(styles.len() - 1)].0).show_ui(ui, |ui| {
+                        for (i, (n, _)) in styles.iter().enumerate() {
+                            ui.selectable_value(style, i, *n);
                         }
-                        ui.weak("Fixed rhythm: the bass still follows your chords.");
-                    }
-                    if b.on && phase == 0 {
-                        if let Some(a) = &heard {
-                            let chord = a.chord.map_or("—".to_string(), |c| c.name());
-                            ui.weak(format!("bass on {chord}"));
-                            if b.follow && !(a.tempo > 0.0 && a.tempo_conf >= 0.15) {
-                                ui.weak("waiting to hear a steady beat — playing at the tempo above");
+                    });
+                    ui.add(egui::Slider::new(vol, 0.0..=1.0).text("Volume"));
+                    ui.horizontal(|ui| {
+                        if mine {
+                            if ui.button("■ Cancel").clicked() {
+                                cmds.push(BandCmd::CancelRecord);
                             }
+                        } else if ui.add_enabled(b.on, egui::Button::new("● Record the roots")).on_hover_text("Starts at the top of the loop: play the root note of each chord, where it changes, once through").clicked() {
+                            cmds.push(BandCmd::Record(track));
                         }
+                        if track == Track::Guitar && ui.add_enabled(!ev.bass.is_empty(), egui::Button::new("Copy from bass")).clicked() {
+                            cmds.push(BandCmd::CopyBassToGuitar);
+                        }
+                        if ui.button("✕ Clear").clicked() {
+                            cmds.push(BandCmd::Clear(track));
+                        }
+                    });
+                    if mine && rec_stage == 0 {
+                        ui.colored_label(egui::Color32::from_rgb(235, 190, 60), "Waiting for the top of the loop…");
+                    } else if mine {
+                        ui.colored_label(egui::Color32::from_rgb(235, 90, 80), "● Play the root notes now (one note at a time)");
+                    } else {
+                        ui.label(egui::RichText::new(ev.text(track)).size(20.0).strong().color(egui::Color32::from_rgb(120, 200, 255)));
                     }
-                }
-                if ui.button("Forget what I played").on_hover_text("Reset the Listener: key, tempo and chord").clicked() {
-                    if let Some(r) = &self.running {
-                        r.control.meters.reset_listener();
-                    }
-                }
+                };
+                part(ui, Track::Bass, "Bass", &BASS_STYLES, &mut b.bass_style, &mut b.bass);
+                ui.separator();
+                part(ui, Track::Guitar, "Rhythm guitar", &GUITAR_STYLES, &mut b.guitar_style, &mut b.guitar);
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label("Chords");
+                    egui::ComboBox::from_id_salt("chord").selected_text(CHORD_TYPES[b.chord.min(CHORD_TYPES.len() - 1)]).show_ui(ui, |ui| {
+                        for (i, n) in CHORD_TYPES.iter().enumerate() {
+                            ui.selectable_value(&mut b.chord, i, *n);
+                        }
+                    });
+                    ui.label("Snap");
+                    egui::ComboBox::from_id_salt("snap").selected_text(match b.snap { Snap::Beat => "beat", Snap::Eighth => "eighth", Snap::Sixteenth => "sixteenth" }).show_ui(ui, |ui| {
+                        ui.selectable_value(&mut b.snap, Snap::Beat, "beat");
+                        ui.selectable_value(&mut b.snap, Snap::Eighth, "eighth");
+                        ui.selectable_value(&mut b.snap, Snap::Sixteenth, "sixteenth");
+                    });
+                });
+                ui.weak("1  Pick a rhythm and tempo, Start.   2  Record the bass: play each chord's root note where it changes.   3  Record the guitar the same way over the bass.");
             });
-            self.learn_bars = new_bars;
             if !open {
                 self.band_open = false;
             }
-            if b != self.band || b.restart || learn.is_some() {
-                self.band = BandSettings { restart: false, ..b };
-                self.send(Cmd::Band(b));
-                if let Some(c) = learn {
-                    self.send(Cmd::BandLearn(c));
-                }
+            if b != self.band {
+                self.band = b;
+                self.send(Cmd::Band(BandCmd::Settings(b)));
                 self.sync_listening();
             }
-            ctx.request_repaint_after(Duration::from_millis(100));
+            for c in cmds {
+                self.send(Cmd::Band(c));
+            }
+            ctx.request_repaint_after(Duration::from_millis(60));
         }
 
         let mut load_builtin: Option<usize> = None;

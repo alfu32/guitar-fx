@@ -9,7 +9,7 @@ use crate::params::{Spec, Value};
 use crate::effects::PitchTracker;
 use crate::tools::{LoopCmd, LoopState, Looper, Metronome};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed};
-use crate::band::{Band, BandCmd, BandSettings, Song};
+use crate::band::{Band, BandCmd, BandEvents};
 use crate::listen::{Analysis, ListenTap};
 use std::sync::{mpsc, Arc, Mutex};
 
@@ -18,13 +18,8 @@ use std::sync::{mpsc, Arc, Mutex};
 pub const SLOT_METERS: usize = 128;
 
 pub(crate) struct Heard {
-    pub tempo: f32,
-    pub tempo_conf: f32,
-    pub beats: u32,
-    pub onsets: u32,
-    /// (root, quality)
-    pub chord: Option<(u8, u8)>,
-    pub key: Option<u8>,
+    /// (sequence number, pitch class, seconds since the pick)
+    pub note: Option<(u32, u8, f32)>,
 }
 
 pub struct Meters {
@@ -44,15 +39,11 @@ pub struct Meters {
     listen_on: AtomicBool,
     listen_reset: AtomicU32,
     analysis: Mutex<Analysis>,
-    heard_tempo: AtomicU32,
-    heard_conf: AtomicU32,
-    heard_beats: AtomicU32,
-    heard_chord: AtomicU32,
-    heard_key: AtomicU32,
-    heard_onsets: AtomicU32,
-    band_phase: AtomicU32,
-    band_beat: AtomicU32,
-    band_song: Mutex<Option<Song>>,
+    heard_note: AtomicU32,
+    heard_note_lag: AtomicU32,
+    band_pos: AtomicU32,
+    band_rec: AtomicU32,
+    band_events: Mutex<BandEvents>,
 }
 
 impl Default for Meters {
@@ -73,15 +64,11 @@ impl Default for Meters {
             listen_on: AtomicBool::default(),
             listen_reset: AtomicU32::default(),
             analysis: Mutex::default(),
-            heard_tempo: AtomicU32::default(),
-            heard_conf: AtomicU32::default(),
-            heard_beats: AtomicU32::default(),
-            heard_chord: AtomicU32::default(),
-            heard_key: AtomicU32::default(),
-            heard_onsets: AtomicU32::default(),
-            band_phase: AtomicU32::default(),
-            band_beat: AtomicU32::default(),
-            band_song: Mutex::default(),
+            heard_note: AtomicU32::default(),
+            heard_note_lag: AtomicU32::default(),
+            band_pos: AtomicU32::default(),
+            band_rec: AtomicU32::default(),
+            band_events: Mutex::default(),
             slots: (0..SLOT_METERS).map(|_| AtomicU32::default()).collect(),
         }
     }
@@ -181,48 +168,49 @@ impl Meters {
         if let Ok(mut g) = self.analysis.lock() {
             *g = a.clone();
         }
-        // the same facts as plain atomics, for the audio thread (the band) to read
-        self.heard_tempo.store(a.tempo.to_bits(), Relaxed);
-        self.heard_conf.store(a.tempo_conf.to_bits(), Relaxed);
-        self.heard_beats.store(a.beats, Relaxed);
-        self.heard_chord.store(a.chord.map_or(0, |c| 0x1000 | (c.quality as u32) << 8 | c.root as u32), Relaxed);
-        self.heard_onsets.store(a.onsets, Relaxed);
-        self.heard_key.store(a.key.map_or(0, |k| 0x100 | k.root as u32), Relaxed);
-    }
-
-    /// What the Listener hears, readable from the audio thread without locking.
-    pub(crate) fn heard(&self) -> Heard {
-        let (c, k) = (self.heard_chord.load(Relaxed), self.heard_key.load(Relaxed));
-        Heard {
-            tempo: f32::from_bits(self.heard_tempo.load(Relaxed)),
-            tempo_conf: f32::from_bits(self.heard_conf.load(Relaxed)),
-            beats: self.heard_beats.load(Relaxed),
-            onsets: self.heard_onsets.load(Relaxed),
-            chord: (c & 0x1000 != 0).then_some(((c & 0xff) as u8, ((c >> 8) & 0xf) as u8)),
-            key: (k & 0x100 != 0).then_some((k & 0xff) as u8),
+        // the latest single note as plain atomics, for the audio thread (the band) to read
+        if let Some(n) = a.note {
+            self.heard_note_lag.store(n.lag.to_bits(), Relaxed);
+            self.heard_note.store(n.seq << 8 | n.pc as u32, Relaxed);
+        } else {
+            self.heard_note.store(0, Relaxed);
         }
     }
 
-    /// Where the band is: (phase, position). Phase: 0 free, 1 count-in, 2 learning, 3 looping,
-    /// 4 learning failed. Position is the beat in the loop (or in the learning take; negative
-    /// during the count-in).
-    pub fn band_state(&self) -> (u32, i32) {
-        (self.band_phase.load(Relaxed), self.band_beat.load(Relaxed) as i32)
+    /// The latest single note the guitar played, readable from the audio thread without locking.
+    pub(crate) fn heard(&self) -> Heard {
+        let n = self.heard_note.load(Relaxed);
+        Heard { note: (n != 0).then(|| (n >> 8, (n & 0xff) as u8, f32::from_bits(self.heard_note_lag.load(Relaxed)))) }
     }
 
-    pub(crate) fn set_band_state(&self, phase: u32, beat: i32) {
-        self.band_phase.store(phase, Relaxed);
-        self.band_beat.store(beat as u32, Relaxed);
+    /// Where the band is in its loop, in beats.
+    pub fn band_pos(&self) -> f32 {
+        f32::from_bits(self.band_pos.load(Relaxed))
     }
 
-    /// The progression the band has learned.
-    pub fn song(&self) -> Option<Song> {
-        self.band_song.lock().ok().and_then(|s| s.clone())
+    /// Which part is being recorded: (0 none / 1 bass / 2 guitar, 0 waiting for the loop start / 1 recording).
+    pub fn band_rec(&self) -> (u32, u32) {
+        let v = self.band_rec.load(Relaxed);
+        (v >> 8, v & 0xff)
     }
 
-    pub(crate) fn set_song(&self, song: Option<Song>) {
-        if let Ok(mut s) = self.band_song.lock() {
-            *s = song;
+    pub(crate) fn set_band_pos(&self, pos: f32, rec: (u32, u32)) {
+        self.band_pos.store(pos.to_bits(), Relaxed);
+        self.band_rec.store(rec.0 << 8 | rec.1, Relaxed);
+    }
+
+    /// The root notes recorded for the bass and the guitar.
+    pub fn band_events(&self) -> BandEvents {
+        self.band_events.lock().map(|e| e.clone()).unwrap_or_default()
+    }
+
+    pub(crate) fn set_band_events(&self, e: &BandEvents) -> bool {
+        match self.band_events.try_lock() {
+            Ok(mut g) => {
+                *g = e.clone();
+                true
+            }
+            Err(_) => false,
         }
     }
 
@@ -259,8 +247,7 @@ pub enum Cmd {
     Gains { input_db: f32, output_db: f32 },
     Metronome { on: bool, bpm: f32, beats: u32, volume: f32 },
     Looper(LoopCmd),
-    Band(BandSettings),
-    BandLearn(BandCmd),
+    Band(BandCmd),
 }
 
 #[derive(Clone)]
@@ -362,12 +349,7 @@ impl Chain {
                     m.configure(on, bpm, beats, volume);
                 }
             }
-            Cmd::Band(b) => {
-                if let Some(band) = &mut self.band {
-                    band.configure(b);
-                }
-            }
-            Cmd::BandLearn(c) => {
+            Cmd::Band(c) => {
                 if let Some(band) = &mut self.band {
                     band.command(c, &self.meters);
                 }

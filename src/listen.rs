@@ -16,6 +16,7 @@
 //! - Chord: cosine similarity with six chord shapes on each root, with hysteresis.
 
 use crate::chain::Meters;
+use crate::effects::PitchTracker;
 use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 use std::collections::VecDeque;
@@ -84,6 +85,18 @@ impl Chord {
     }
 }
 
+/// A single note the guitar has just played, named once its pitch has settled.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NoteEvent {
+    /// Counts up with every note, so a reader can tell a new one from the last.
+    pub seq: u32,
+    /// Pitch class (0 = C).
+    pub pc: u8,
+    pub midi: f32,
+    /// Seconds between the pick and the moment this event was published.
+    pub lag: f32,
+}
+
 /// One snapshot of what the Listener hears.
 #[derive(Clone, Debug, Default)]
 pub struct Analysis {
@@ -103,6 +116,8 @@ pub struct Analysis {
     pub chord: Option<Chord>,
     /// Fast pitch-class energy (C..B), the strongest scaled to 1.
     pub chroma: [f32; 12],
+    /// The latest single note played.
+    pub note: Option<NoteEvent>,
 }
 
 // ---- FFT ----------------------------------------------------------------------------------
@@ -297,6 +312,12 @@ pub struct Listener {
     long: [f32; 12],
     chord_vote: Option<(u8, u8, u32)>,
     quiet_frames: u32,
+    pt: PitchTracker,
+    raw_n: u64,
+    sr: f32,
+    onset_raw: Option<u64>,
+    pitches: Vec<f32>,
+    note_seq: u32,
     out: Analysis,
 }
 
@@ -334,6 +355,12 @@ impl Listener {
             long: [0.0; 12],
             chord_vote: None,
             quiet_frames: 0,
+            pt: PitchTracker::new(sr),
+            raw_n: 0,
+            sr,
+            onset_raw: None,
+            pitches: Vec::new(),
+            note_seq: 0,
             out: Analysis::default(),
         }
     }
@@ -348,14 +375,48 @@ impl Listener {
     }
 
     pub fn feed(&mut self, input: &[f32]) {
-        for &x in input {
-            self.acc += x;
-            self.acc_n += 1;
-            if self.acc_n == self.decim {
-                let s = self.acc / self.decim as f32;
-                self.acc = 0.0;
-                self.acc_n = 0;
-                self.sample(s);
+        // in slices of the pitch tracker's hop, so a note is dated to within a few milliseconds
+        for sub in input.chunks(256) {
+            for &x in sub {
+                self.acc += x;
+                self.acc_n += 1;
+                if self.acc_n == self.decim {
+                    let s = self.acc / self.decim as f32;
+                    self.acc = 0.0;
+                    self.acc_n = 0;
+                    self.sample(s);
+                }
+            }
+            self.raw_n += sub.len() as u64;
+            if self.pt.push(sub) {
+                let hz = self.pt.detect();
+                self.pitch_step(hz);
+            }
+        }
+    }
+
+    /// After a note starts, wait for its pitch to settle (the attack is noisy) and name it.
+    fn pitch_step(&mut self, hz: Option<f32>) {
+        let Some(t0) = self.onset_raw else { return };
+        let elapsed = (self.raw_n - t0) as f32 / self.sr;
+        if elapsed > 0.3 {
+            self.onset_raw = None;
+            return;
+        }
+        if elapsed < 0.03 {
+            return;
+        }
+        if let Some(h) = hz {
+            self.pitches.push(69.0 + 12.0 * (h / 440.0).log2());
+        }
+        if self.pitches.len() >= 4 {
+            let mut v = self.pitches.clone();
+            v.sort_by(f32::total_cmp);
+            let med = v[v.len() / 2];
+            if v.iter().filter(|m| (**m - med).abs() < 0.6).count() >= 3 {
+                self.note_seq = self.note_seq.wrapping_add(1);
+                self.out.note = Some(NoteEvent { seq: self.note_seq, pc: (med.round() as i32).rem_euclid(12) as u8, midi: med, lag: elapsed });
+                self.onset_raw = None;
             }
         }
     }
@@ -476,6 +537,8 @@ impl Listener {
         } else if flux > 0.35 * self.peak_flux && flux > 0.04 {
             self.out.onsets = self.out.onsets.wrapping_add(1);
             self.cool = 6;
+            self.onset_raw = Some(self.raw_n);
+            self.pitches.clear();
         }
         let cap = (HISTORY_SECS * self.env_rate) as usize;
         self.onset.push_back(flux);
@@ -742,6 +805,28 @@ mod tests {
         let a = run(&rhythm(100.0, 12.0, false), 64);
         // 100 bpm for 11.5 s of beats is about 19 notes
         assert!((17..=22).contains(&a.onsets), "{} onsets", a.onsets);
+    }
+
+    #[test]
+    fn names_the_notes_you_play() {
+        let mut x = vec![0.0; (6.0 * SR) as usize];
+        let played = [110.0, 146.83, 82.41, 98.0, 220.0];
+        for (k, &hz) in played.iter().enumerate() {
+            note(&mut x, ((0.5 + 1.0 * k as f32) * SR) as usize, hz, 0.4, 4.0);
+        }
+        let mut l = Listener::new(SR);
+        let mut got: Vec<NoteEvent> = Vec::new();
+        for c in x.chunks(480) {
+            l.feed(c);
+            if let Some(n) = l.analysis().note {
+                if got.last().map(|g| g.seq) != Some(n.seq) {
+                    got.push(n);
+                }
+            }
+        }
+        let pcs: Vec<u8> = got.iter().map(|n| n.pc).collect();
+        assert_eq!(pcs, vec![9, 2, 4, 7, 9], "{got:?}");
+        assert!(got.iter().all(|n| n.lag > 0.03 && n.lag < 0.2), "{got:?}");
     }
 
     #[test]

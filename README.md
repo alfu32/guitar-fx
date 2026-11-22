@@ -101,13 +101,17 @@ tempo, a light that flashes on every beat), a **looper** (Record, then Close loo
 Stop, Clear; it records what comes out of the chain, up to 60 s) and a **tuner** (note, cents
 and a needle; the output can be muted while tuning). The **Listener** window shows what you are
 playing in musical terms: the chord, the key or mode (with how sure it is), the tempo with a beat light, and
-the 12 pitch classes. The **Band** window starts a synthesised drummer and bassist (nine styles: rock, four on the floor,
-half-time, funk, reggae, ballad, bossa, country, punk; no samples are used) in two phases. **1 · Learn**:
-set a tempo and a number of bars, press Learn; after a count-in bar and with a quiet click for time, play
-your progression; the band writes down the chord of every beat and where your strums fall. **2 · Play over
-it**: the band loops what it learned and is locked: it no longer listens, so the progression and the rhythm
-cannot drift. Until something is learned the band follows you (tempo and beats), or, with "Follow my tempo"
-off, keeps a fixed rhythm while the bass still follows your chords. The Listener
+the 12 pitch classes. The **Band** window is a drummer, a bassist and a rhythm guitarist that you direct by playing.
+The **rhythm** is fixed: pick one of 20 (rock, rock shuffle, four on the floor, half-time, funk, disco,
+hip-hop, Motown, reggae, ballad, bossa nova, samba, country, punk, metal, blues shuffle, jazz swing, slow
+12/8 blues, waltz, waltz ballad), a tempo and 1-8 bars; nothing follows your playing. The **bass** is
+recorded by playing its root notes once over the drums: the band writes down which note and where, then plays
+the bass style you chose (14, from whole notes to walking, funk, reggae, boogie) on those roots, changing root
+exactly where you played. The **rhythm guitar** is recorded the same way over the drums and the bass, and
+plays one of 13 comping styles (strums, skanks, chops, arpeggios, boom-chick...) on the roots you indicated.
+Both are heard while you record them. Chord types come from the roots you played (a major or minor key that
+contains them) or can be set by hand. Play single notes while recording (one at a time, on a low string
+works best; it names notes from about 60 Hz up). No samples are used. The Listener
 listens to the dry guitar on a separate thread, so it adds no delay; it needs a few
 seconds of playing, works best on steady playing, and reads a single line or strummed chords (the key is a
 guess between a mode and its relative modes, so a C major and an A minor tune can swap). Neural Amp Modeler captures (`.nam`, from [tone3000.com](https://www.tone3000.com) and elsewhere)
