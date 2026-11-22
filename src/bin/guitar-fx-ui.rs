@@ -77,6 +77,7 @@ struct App {
     tuner_on: bool,
     listen_on: bool,
     band_open: bool,
+    band_pick: Option<(Track, f32, egui::Pos2)>,
     band: BandSettings,
     tuner_mute: bool,
     tuner_hz: f32,
@@ -122,6 +123,7 @@ impl App {
             tuner_on: false,
             listen_on: false,
             band_open: false,
+            band_pick: None,
             band: BandSettings::default(),
             tuner_mute: true,
             tuner_hz: 0.0,
@@ -910,20 +912,28 @@ impl eframe::App for App {
             let mut open = true;
             let mut b = self.band;
             let mut cmds: Vec<BandCmd> = Vec::new();
-            let (pos, (rec_track, rec_stage), ev) = match &self.running {
-                Some(r) => (r.control.meters.band_pos(), r.control.meters.band_rec(), r.control.meters.band_events()),
-                None => (0.0, (0, 0), Default::default()),
+            let (pos, (rec_track, rec_stage), ev, levels) = match &self.running {
+                Some(r) => (r.control.meters.band_pos(), r.control.meters.band_rec(), r.control.meters.band_events(), r.control.meters.band_levels()),
+                None => (0.0, (0, 0), Default::default(), [0.0; 3]),
             };
             let running = self.running.is_some();
             let bpb = RHYTHMS[b.rhythm.min(RHYTHMS.len() - 1)].beats.max(1) as f32;
-            egui::Window::new("Band").open(&mut open).collapsible(false).resizable(false).show(&ctx, |ui| {
-                ui.set_min_width(380.0);
+            let loop_beats = (b.bars as f32 * bpb).max(1.0);
+            let mut pick = self.band_pick;
+            const HEAD_W: f32 = 236.0;
+            const GUTTER: f32 = 58.0;
+            const ROW_H: f32 = 15.0;
+            let amber = egui::Color32::from_rgb(235, 170, 60);
+            let blue = egui::Color32::from_rgb(90, 160, 235);
+            let green = egui::Color32::from_rgb(110, 200, 130);
+            let red = egui::Color32::from_rgb(235, 90, 80);
+            let note_name = |pc: u8| listen::NOTE_NAMES[pc as usize % 12];
+            egui::Window::new("Band").open(&mut open).collapsible(false).resizable(true).default_width(1000.0).show(&ctx, |ui| {
                 if !running {
                     ui.label("Press Start first.");
                 }
-                // ---- the rhythm
-                ui.label(egui::RichText::new("Rhythm").strong());
-                ui.horizontal(|ui| {
+                // ---- transport
+                ui.horizontal_wrapped(|ui| {
                     if ui.add_enabled(running, egui::Button::new(if b.on { "■ Stop" } else { "▶ Start" }).selected(b.on)).clicked() {
                         b.on = !b.on;
                     }
@@ -932,73 +942,280 @@ impl eframe::App for App {
                     }
                     ui.add(egui::DragValue::new(&mut b.bpm).range(40.0..=240.0).suffix(" bpm"));
                     ui.add(egui::DragValue::new(&mut b.bars).range(1..=8).suffix(" bars"));
-                });
-                egui::ComboBox::from_id_salt("rhythm").width(220.0).selected_text(RHYTHMS[b.rhythm.min(RHYTHMS.len() - 1)].name).show_ui(ui, |ui| {
-                    for (i, r) in RHYTHMS.iter().enumerate() {
-                        ui.selectable_value(&mut b.rhythm, i, r.name);
-                    }
-                });
-                ui.add(egui::Slider::new(&mut b.drums, 0.0..=1.0).text("Drums"));
-                if b.on {
-                    let bar = (pos / bpb).floor() as i32 + 1;
-                    let beat = (pos % bpb).floor() as i32 + 1;
-                    ui.add(egui::ProgressBar::new((pos / (b.bars as f32 * bpb)).clamp(0.0, 1.0)).desired_width(340.0).text(format!("bar {bar} of {} · beat {beat}", b.bars)));
-                }
-                ui.separator();
-
-                // ---- the two played parts
-                let mut part = |ui: &mut egui::Ui, track: Track, title: &str, styles: &[(&str, &str)], style: &mut usize, vol: &mut f32| {
-                    let mine = rec_track == track as u32;
-                    ui.label(egui::RichText::new(title).strong());
-                    egui::ComboBox::from_id_salt(title).width(220.0).selected_text(styles[(*style).min(styles.len() - 1)].0).show_ui(ui, |ui| {
-                        for (i, (n, _)) in styles.iter().enumerate() {
-                            ui.selectable_value(style, i, *n);
+                    ui.label("Drum loop");
+                    egui::ComboBox::from_id_salt("rhythm").width(170.0).selected_text(RHYTHMS[b.rhythm.min(RHYTHMS.len() - 1)].name).show_ui(ui, |ui| {
+                        for (i, r) in RHYTHMS.iter().enumerate() {
+                            ui.selectable_value(&mut b.rhythm, i, r.name);
                         }
                     });
-                    ui.add(egui::Slider::new(vol, 0.0..=1.0).text("Volume"));
-                    ui.horizontal(|ui| {
-                        if mine {
-                            if ui.button("■ Cancel").clicked() {
-                                cmds.push(BandCmd::CancelRecord);
-                            }
-                        } else if ui.add_enabled(b.on, egui::Button::new("● Record the roots")).on_hover_text("Starts at the top of the loop: play the root note of each chord, where it changes, once through").clicked() {
-                            cmds.push(BandCmd::Record(track));
-                        }
-                        if track == Track::Guitar && ui.add_enabled(!ev.bass.is_empty(), egui::Button::new("Copy from bass")).clicked() {
-                            cmds.push(BandCmd::CopyBassToGuitar);
-                        }
-                        if ui.button("✕ Clear").clicked() {
-                            cmds.push(BandCmd::Clear(track));
-                        }
-                    });
-                    if mine && rec_stage == 0 {
-                        ui.colored_label(egui::Color32::from_rgb(235, 190, 60), "Waiting for the top of the loop…");
-                    } else if mine {
-                        ui.colored_label(egui::Color32::from_rgb(235, 90, 80), "● Play the root notes now (one note at a time)");
-                    } else {
-                        ui.label(egui::RichText::new(ev.text(track)).size(20.0).strong().color(egui::Color32::from_rgb(120, 200, 255)));
-                    }
-                };
-                part(ui, Track::Bass, "Bass", &BASS_STYLES, &mut b.bass_style, &mut b.bass);
-                ui.separator();
-                part(ui, Track::Guitar, "Rhythm guitar", &GUITAR_STYLES, &mut b.guitar_style, &mut b.guitar);
-                ui.separator();
-                ui.horizontal(|ui| {
                     ui.label("Chords");
-                    egui::ComboBox::from_id_salt("chord").selected_text(CHORD_TYPES[b.chord.min(CHORD_TYPES.len() - 1)]).show_ui(ui, |ui| {
+                    egui::ComboBox::from_id_salt("chord").width(150.0).selected_text(CHORD_TYPES[b.chord.min(CHORD_TYPES.len() - 1)]).show_ui(ui, |ui| {
                         for (i, n) in CHORD_TYPES.iter().enumerate() {
                             ui.selectable_value(&mut b.chord, i, *n);
                         }
                     });
                     ui.label("Snap");
-                    egui::ComboBox::from_id_salt("snap").selected_text(match b.snap { Snap::Beat => "beat", Snap::Eighth => "eighth", Snap::Sixteenth => "sixteenth" }).show_ui(ui, |ui| {
+                    egui::ComboBox::from_id_salt("snap").width(80.0).selected_text(match b.snap { Snap::Beat => "beat", Snap::Eighth => "eighth", Snap::Sixteenth => "sixteenth" }).show_ui(ui, |ui| {
                         ui.selectable_value(&mut b.snap, Snap::Beat, "beat");
                         ui.selectable_value(&mut b.snap, Snap::Eighth, "eighth");
                         ui.selectable_value(&mut b.snap, Snap::Sixteenth, "sixteenth");
                     });
                 });
-                ui.weak("1  Pick a rhythm and tempo, Start.   2  Record the bass: play each chord's root note where it changes.   3  Record the guitar the same way over the bass.");
+                ui.add_space(4.0);
+
+                let lane_w = (ui.available_width() - HEAD_W - 12.0).max(360.0);
+                let grid_w = lane_w - GUTTER;
+                let x_of = |lane: egui::Rect, beat: f32| lane.left() + GUTTER + beat / loop_beats * grid_w;
+                let mut top = f32::MAX;
+                let mut bottom = 0.0f32;
+                let mut lane_left = 0.0f32;
+
+                // ---- the ruler
+                ui.horizontal_top(|ui| {
+                    ui.allocate_space(egui::vec2(HEAD_W, 14.0));
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(lane_w, 14.0), egui::Sense::hover());
+                    lane_left = rect.left();
+                    top = top.min(rect.top());
+                    let p = ui.painter_at(rect);
+                    for bar in 0..b.bars {
+                        let x = x_of(rect, bar as f32 * bpb);
+                        p.text(egui::pos2(x + 3.0, rect.center().y), egui::Align2::LEFT_CENTER, format!("{}", bar + 1), egui::FontId::proportional(11.0), egui::Color32::from_gray(170));
+                    }
+                });
+
+                // ---- one row: header on the left, lane on the right
+                // drums
+                ui.horizontal_top(|ui| {
+                    ui.allocate_ui_with_layout(egui::vec2(HEAD_W, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                        ui.set_width(HEAD_W - 8.0);
+                        ui.horizontal(|ui| {
+                            ui.colored_label(amber, egui::RichText::new("Drums").strong());
+                            ui.toggle_value(&mut b.mute[0], "M").on_hover_text("Mute");
+                            ui.toggle_value(&mut b.solo[0], "S").on_hover_text("Solo");
+                        });
+                        ui.add(egui::Slider::new(&mut b.drums, 0.0..=1.0).text("vol"));
+                        ui.add(egui::ProgressBar::new(levels[0].sqrt().min(1.0)).desired_height(4.0));
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(RHYTHMS[b.rhythm.min(RHYTHMS.len() - 1)].name).weak());
+                            if ui.small_button("✕ clear").clicked() {
+                                cmds.push(BandCmd::ClearDrums);
+                            }
+                        });
+                        ui.weak("click: hit · again: accent\nright-click: ghost/soft");
+                    });
+                    let (rect, resp) = ui.allocate_exact_size(egui::vec2(lane_w, ROW_H * 6.0), egui::Sense::click());
+                    top = top.min(rect.top());
+                    bottom = bottom.max(rect.bottom());
+                    let p = ui.painter_at(rect);
+                    p.rect_filled(rect, 3.0, egui::Color32::from_gray(26));
+                    let steps = ev.drums.steps.max(1);
+                    let total = (b.bars as usize * steps) as f32;
+                    let cell_w = grid_w / total;
+                    for (row, name) in guitar_fx_core::band::DRUM_ROWS.iter().enumerate() {
+                        let y = rect.top() + row as f32 * ROW_H;
+                        p.text(egui::pos2(rect.left() + 4.0, y + ROW_H / 2.0), egui::Align2::LEFT_CENTER, *name, egui::FontId::proportional(10.0), egui::Color32::from_gray(150));
+                        for k in 0..(b.bars as usize * steps) {
+                            let i = k % steps;
+                            let cell = egui::Rect::from_min_size(egui::pos2(rect.left() + GUTTER + k as f32 * cell_w, y + 1.0), egui::vec2((cell_w - 1.0).max(1.0), ROW_H - 2.0));
+                            let lv = ev.drums.rows[row][i];
+                            let on_beat = (i * bpb as usize) % steps == 0;
+                            let col = match lv {
+                                0 => if on_beat { egui::Color32::from_gray(52) } else { egui::Color32::from_gray(38) },
+                                1 => amber.gamma_multiply(0.30),
+                                2 => amber.gamma_multiply(0.55),
+                                3 => amber.gamma_multiply(0.8),
+                                _ => amber,
+                            };
+                            p.rect_filled(cell, 2.0, col);
+                        }
+                    }
+                    if resp.clicked() || resp.secondary_clicked() {
+                        if let Some(pt) = resp.interact_pointer_pos() {
+                            let row = ((pt.y - rect.top()) / ROW_H) as i32;
+                            let k = ((pt.x - rect.left() - GUTTER) / cell_w).floor() as i32;
+                            if (0..6).contains(&row) && k >= 0 && (k as usize) < b.bars as usize * steps {
+                                let i = k as usize % steps;
+                                let lv = ev.drums.rows[row as usize][i];
+                                let next = if resp.secondary_clicked() {
+                                    match lv { 1 => 2, 2 => 0, _ => 1 }
+                                } else {
+                                    match lv { 0 | 1 | 2 => 3, 3 => 4, _ => 0 }
+                                };
+                                cmds.push(BandCmd::SetDrumStep(row as u8, i as u8, next));
+                            }
+                        }
+                    }
+                });
+                ui.add_space(6.0);
+
+                // bass and guitar
+                for (track, title, col, styles, style_ix, hits, wave, wave_ok, roots) in [
+                    (Track::Bass, "Bass", blue, &BASS_STYLES[..], 0usize, &ev.bass_hits, &ev.bass_wave, ev.bass_wave_ok, &ev.bass),
+                    (Track::Guitar, "Rhythm guitar", green, &GUITAR_STYLES[..], 1, &ev.guitar_hits, &ev.guitar_wave, ev.guitar_wave_ok, &ev.guitar),
+                ] {
+                    let ti = track as usize; // 1 bass, 2 guitar: index into mute/solo/levels
+                    let (style, volume, source) = if style_ix == 0 { (&mut b.bass_style, &mut b.bass, &mut b.bass_src) } else { (&mut b.guitar_style, &mut b.guitar, &mut b.guitar_src) };
+                    let mine = rec_track == track as u32;
+                    let audio = *source == guitar_fx_core::band::Source::Audio;
+                    ui.horizontal_top(|ui| {
+                        ui.allocate_ui_with_layout(egui::vec2(HEAD_W, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                            ui.set_width(HEAD_W - 8.0);
+                            ui.horizontal(|ui| {
+                                ui.colored_label(col, egui::RichText::new(title).strong());
+                                ui.toggle_value(&mut b.mute[ti], "M").on_hover_text("Mute");
+                                ui.toggle_value(&mut b.solo[ti], "S").on_hover_text("Solo");
+                                ui.selectable_value(source, guitar_fx_core::band::Source::Style, "Style").on_hover_text("The band plays a style on the root notes you indicate");
+                                ui.selectable_value(source, guitar_fx_core::band::Source::Audio, "Rec").on_hover_text("Your own playing, recorded for one pass and looped");
+                            });
+                            ui.add(egui::Slider::new(volume, 0.0..=1.0).text("vol"));
+                            ui.add(egui::ProgressBar::new(levels[ti].sqrt().min(1.0)).desired_height(4.0));
+                            if !audio {
+                                egui::ComboBox::from_id_salt(title).width(HEAD_W - 20.0).selected_text(styles[(*style).min(styles.len() - 1)].0).show_ui(ui, |ui| {
+                                    for (i, (n, _)) in styles.iter().enumerate() {
+                                        ui.selectable_value(style, i, *n);
+                                    }
+                                });
+                            }
+                            ui.horizontal(|ui| {
+                                if mine {
+                                    if ui.button("■ Cancel").clicked() {
+                                        cmds.push(BandCmd::CancelRecord);
+                                    }
+                                } else if ui
+                                    .add_enabled(b.on, egui::Button::new(if audio { "● Record take" } else { "● Record roots" }))
+                                    .on_hover_text(if audio { "Starts at the top of the loop: play your part once through" } else { "Starts at the top of the loop: play each chord's root note where it changes (or click the lane to place them)" })
+                                    .clicked()
+                                {
+                                    cmds.push(BandCmd::Record(track));
+                                }
+                                if track == Track::Guitar && !audio && ui.add_enabled(!ev.bass.is_empty(), egui::Button::new("= bass")).on_hover_text("Use the bass roots").clicked() {
+                                    cmds.push(BandCmd::CopyBassToGuitar);
+                                }
+                                if ui.small_button("✕").on_hover_text("Clear this track").clicked() {
+                                    cmds.push(BandCmd::Clear(track));
+                                }
+                            });
+                        });
+                        let lane_h = 78.0;
+                        let (rect, resp) = ui.allocate_exact_size(egui::vec2(lane_w, lane_h), egui::Sense::click());
+                        top = top.min(rect.top());
+                        bottom = bottom.max(rect.bottom());
+                        let p = ui.painter_at(rect);
+                        p.rect_filled(rect, 3.0, egui::Color32::from_gray(26));
+                        let grid = egui::Rect::from_min_max(egui::pos2(rect.left() + GUTTER, rect.top()), rect.right_bottom());
+                        for bar in 0..b.bars {
+                            let x = x_of(rect, bar as f32 * bpb);
+                            p.line_segment([egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())], egui::Stroke::new(1.0, egui::Color32::from_gray(48)));
+                        }
+                        p.text(egui::pos2(rect.left() + 4.0, rect.center().y), egui::Align2::LEFT_CENTER, if audio { "take" } else { "roots" }, egui::FontId::proportional(10.0), egui::Color32::from_gray(150));
+                        if audio {
+                            if wave.is_empty() {
+                                p.text(grid.center(), egui::Align2::CENTER_CENTER, "no take yet: ● Record take, then play once through", egui::FontId::proportional(12.0), egui::Color32::from_gray(120));
+                            } else {
+                                let c = if wave_ok { col } else { egui::Color32::from_gray(90) };
+                                let mid = grid.center().y;
+                                for (i, v) in wave.iter().enumerate() {
+                                    let x = grid.left() + (i as f32 + 0.5) / wave.len() as f32 * grid_w;
+                                    let h = (v.sqrt().min(1.0)) * (lane_h / 2.0 - 3.0);
+                                    p.line_segment([egui::pos2(x, mid - h), egui::pos2(x, mid + h)], egui::Stroke::new((grid_w / wave.len() as f32).max(1.0), c));
+                                }
+                                if !wave_ok {
+                                    p.text(grid.center(), egui::Align2::CENTER_CENTER, "recorded at another tempo or length: silent", egui::FontId::proportional(12.0), egui::Color32::from_rgb(235, 190, 60));
+                                }
+                            }
+                        } else {
+                            // root blocks: each lasts until the next root; the last one carries across the loop
+                            let n = roots.len();
+                            for (k, &(t, pc)) in roots.iter().enumerate() {
+                                let end = if k + 1 < n { roots[k + 1].0 } else { loop_beats };
+                                let blk = egui::Rect::from_min_max(egui::pos2(x_of(rect, t), rect.top() + 3.0), egui::pos2(x_of(rect, end) - 1.0, rect.bottom() - 3.0));
+                                p.rect_filled(blk, 3.0, col.gamma_multiply(0.35));
+                                p.rect_stroke(blk, 3.0, egui::Stroke::new(1.0, col), egui::StrokeKind::Inside);
+                                p.text(blk.left_top() + egui::vec2(5.0, 3.0), egui::Align2::LEFT_TOP, note_name(pc), egui::FontId::proportional(15.0), egui::Color32::WHITE);
+                            }
+                            if let Some(&(t0, pc)) = roots.first() {
+                                if t0 > 0.0 {
+                                    let last = roots.last().map(|r| r.1).unwrap_or(pc);
+                                    let blk = egui::Rect::from_min_max(egui::pos2(x_of(rect, 0.0), rect.top() + 3.0), egui::pos2(x_of(rect, t0) - 1.0, rect.bottom() - 3.0));
+                                    p.rect_filled(blk, 3.0, col.gamma_multiply(0.2));
+                                    p.text(blk.left_top() + egui::vec2(5.0, 3.0), egui::Align2::LEFT_TOP, note_name(last), egui::FontId::proportional(13.0), egui::Color32::from_gray(190));
+                                }
+                            }
+                            // where the style plays
+                            if !roots.is_empty() {
+                                for bar in 0..b.bars {
+                                    for &h in hits.iter() {
+                                        let x = x_of(rect, bar as f32 * bpb + h);
+                                        p.line_segment([egui::pos2(x, rect.bottom() - 16.0), egui::pos2(x, rect.bottom() - 5.0)], egui::Stroke::new(2.0, egui::Color32::WHITE.gamma_multiply(0.75)));
+                                    }
+                                }
+                            } else {
+                                p.text(grid.center(), egui::Align2::CENTER_CENTER, "no roots yet: ● Record roots and play them, or click here to place one", egui::FontId::proportional(12.0), egui::Color32::from_gray(120));
+                            }
+                        }
+                        if mine {
+                            p.rect_stroke(rect, 3.0, egui::Stroke::new(2.0, if rec_stage == 0 { amber } else { red }), egui::StrokeKind::Inside);
+                            p.text(egui::pos2(rect.right() - 8.0, rect.top() + 9.0), egui::Align2::RIGHT_CENTER, if rec_stage == 0 { "waiting for the top of the loop…" } else if audio { "● recording: play your part" } else { "● play the root notes, one at a time" }, egui::FontId::proportional(12.0), if rec_stage == 0 { amber } else { red });
+                        }
+                        if !audio && resp.clicked() {
+                            if let Some(pt) = resp.interact_pointer_pos() {
+                                if pt.x >= grid.left() {
+                                    let beat = ((pt.x - grid.left()) / grid_w * loop_beats).clamp(0.0, loop_beats - 0.01);
+                                    pick = Some((track, beat, pt));
+                                }
+                            }
+                        }
+                    });
+                    ui.add_space(6.0);
+                }
+
+                // ---- the playhead across every lane
+                if b.on && top < bottom {
+                    let x = lane_left + GUTTER + (pos / loop_beats).clamp(0.0, 1.0) * grid_w;
+                    ui.painter().line_segment([egui::pos2(x, top), egui::pos2(x, bottom)], egui::Stroke::new(2.0, egui::Color32::from_rgb(250, 250, 250)));
+                }
+                ui.weak("Pick a drum loop (click the grid to edit it), then give the bass and the guitar a source: Style (play each chord's root once, or click the lane to place roots; the band plays the chosen style on them) or Rec (record your own playing for one pass).");
             });
+
+            // the note chooser for a clicked spot of a roots lane
+            if let Some((track, beat, at)) = pick {
+                let mut done = false;
+                let existing = match track {
+                    Track::Bass => &ev.bass,
+                    Track::Guitar => &ev.guitar,
+                }
+                .iter()
+                .any(|r| (r.0 - beat).abs() < 0.3);
+                egui::Area::new(egui::Id::unique("root_pick")).fixed_pos(at).order(egui::Order::Foreground).show(&ctx, |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.label(format!("Root at bar {} beat {:.1}", (beat / bpb) as i32 + 1, beat % bpb + 1.0));
+                        egui::Grid::new("notes").show(ui, |ui| {
+                            for pc in 0..12u8 {
+                                if ui.button(note_name(pc)).clicked() {
+                                    cmds.push(BandCmd::SetRoot(track, beat, pc));
+                                    done = true;
+                                }
+                                if pc % 4 == 3 {
+                                    ui.end_row();
+                                }
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            if existing && ui.button("Remove").clicked() {
+                                cmds.push(BandCmd::RemoveRoot(track, beat));
+                                done = true;
+                            }
+                            if ui.button("Close").clicked() {
+                                done = true;
+                            }
+                        });
+                    });
+                });
+                if done || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    pick = None;
+                }
+            }
+            self.band_pick = pick;
             if !open {
                 self.band_open = false;
             }
@@ -1010,7 +1227,7 @@ impl eframe::App for App {
             for c in cmds {
                 self.send(Cmd::Band(c));
             }
-            ctx.request_repaint_after(Duration::from_millis(60));
+            ctx.request_repaint_after(Duration::from_millis(40));
         }
 
         let mut load_builtin: Option<usize> = None;

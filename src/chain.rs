@@ -44,6 +44,7 @@ pub struct Meters {
     band_pos: AtomicU32,
     band_rec: AtomicU32,
     band_events: Mutex<BandEvents>,
+    band_levels: [AtomicU32; 3],
 }
 
 impl Default for Meters {
@@ -69,6 +70,7 @@ impl Default for Meters {
             band_pos: AtomicU32::default(),
             band_rec: AtomicU32::default(),
             band_events: Mutex::default(),
+            band_levels: Default::default(),
             slots: (0..SLOT_METERS).map(|_| AtomicU32::default()).collect(),
         }
     }
@@ -211,6 +213,17 @@ impl Meters {
                 true
             }
             Err(_) => false,
+        }
+    }
+
+    /// Recent peak of the drum, bass and guitar tracks.
+    pub fn band_levels(&self) -> [f32; 3] {
+        std::array::from_fn(|i| f32::from_bits(self.band_levels[i].load(Relaxed)))
+    }
+
+    pub(crate) fn set_band_levels(&self, l: [f32; 3]) {
+        for (c, v) in self.band_levels.iter().zip(l) {
+            c.store(v.to_bits(), Relaxed);
         }
     }
 

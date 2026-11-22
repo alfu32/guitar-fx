@@ -1,14 +1,15 @@
-//! The Band: a drummer, a bassist and a rhythm guitarist that you direct by playing.
+//! The Band: a small multitrack mixer with a drum track, a bass track and a guitar track, all
+//! locked to one loop (tempo, bars) and shown on one timeline.
 //!
-//! - The **rhythm** (drums) is fixed: you choose it from a list and set the tempo and the loop
-//!   length. Nothing follows your playing, so nothing can drift.
-//! - The **bass** is recorded by playing its root notes once over the drums. The band writes down
-//!   which note and where, and from then on plays the chosen bass style on those roots, changing
-//!   root exactly where you played.
-//! - The **guitar** is recorded the same way, over the drums and the bass, and plays the chosen
-//!   comping style (strums, chops, arpeggios...) on the roots you indicated.
+//! - The **drum track** holds a loop you choose from the catalog and can edit step by step.
+//! - The **bass** and **guitar** tracks each have a source:
+//!   - *Style*: you indicate the root notes by playing them once over the loop (or place them on
+//!     the timeline) and the band plays the chosen style on them, changing root where you
+//!     indicated;
+//!   - *Recorded*: one pass of your own playing is captured and looped as audio.
+//! - Each track has a volume, mute and solo.
 //!
-//! While a part is being recorded the band already plays it, so you hear the style on every note
+//! While roots are being recorded the band already plays the style, so you hear it on every note
 //! as you play it; at the end of the pass it loops. Everything is synthesised here, so nothing is
 //! sampled and nothing has a licence.
 //!
@@ -106,6 +107,51 @@ pub const GUITAR_STYLES: [(&str, &str); 13] = [
 
 pub const CHORD_TYPES: [&str; 6] = ["Auto (from your roots)", "Major", "Minor", "Dominant 7", "Minor 7", "Power chord"];
 
+pub const DRUM_ROWS: [&str; 6] = ["Kick", "Snare", "Hi-hat", "Open hat", "Rim", "Ride"];
+pub const MAX_STEPS: usize = 16;
+/// Velocity of a step level: off, ghost, soft, normal, accent.
+const LEVEL_VEL: [f32; 5] = [0.0, 0.3, 0.55, 0.8, 1.0];
+
+/// The drum loop of one bar: six rows of steps, each a level 0 (off) to 4 (accent).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DrumGrid {
+    pub steps: usize,
+    pub rows: [[u8; MAX_STEPS]; 6],
+}
+
+impl Default for DrumGrid {
+    fn default() -> Self {
+        Self { steps: 16, rows: [[0; MAX_STEPS]; 6] }
+    }
+}
+
+fn grid_of(r: &Rhythm) -> DrumGrid {
+    let pats = [r.kick, r.snare, r.hat, r.open, r.rim, r.ride];
+    let steps = if pats.iter().any(|p| p.len() == 12) { 12 } else { 16 };
+    let mut g = DrumGrid { steps, ..Default::default() };
+    for (row, pat) in pats.iter().enumerate() {
+        for (i, c) in pat.chars().take(steps).enumerate() {
+            g.rows[row][i] = match c {
+                'X' => 4,
+                'x' => 3,
+                'o' => 2,
+                'g' => 1,
+                _ => 0,
+            };
+        }
+    }
+    g
+}
+
+/// Where a played part comes from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Source {
+    /// The band plays a style on the root notes.
+    Style,
+    /// One pass of your own playing, looped.
+    Audio,
+}
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Snap {
     Beat,
@@ -138,11 +184,16 @@ pub struct BandSettings {
     pub chord: usize,
     /// Where the roots you play are rounded to.
     pub snap: Snap,
+    /// Mute and solo for drums, bass, guitar.
+    pub mute: [bool; 3],
+    pub solo: [bool; 3],
+    pub bass_src: Source,
+    pub guitar_src: Source,
 }
 
 impl Default for BandSettings {
     fn default() -> Self {
-        Self { on: false, rhythm: 0, bpm: 100.0, bars: 4, drums: 0.8, bass: 0.7, guitar: 0.6, bass_style: 2, guitar_style: 1, chord: 0, snap: Snap::Eighth }
+        Self { on: false, rhythm: 0, bpm: 100.0, bars: 4, drums: 0.8, bass: 0.7, guitar: 0.6, bass_style: 2, guitar_style: 1, chord: 0, snap: Snap::Eighth, mute: [false; 3], solo: [false; 3], bass_src: Source::Style, guitar_src: Source::Style }
     }
 }
 
@@ -158,7 +209,15 @@ pub enum BandCmd {
     /// Record the roots of this part, starting at the next loop start, for one pass.
     Record(Track),
     CancelRecord,
+    /// Empty what the track currently plays (its roots, or its recording).
     Clear(Track),
+    /// Put a root at a position (beats), rounded to the snap grid.
+    SetRoot(Track, f32, u8),
+    /// Remove the root nearest to a position (beats).
+    RemoveRoot(Track, f32),
+    /// Set one step of the drum loop: row, step, level 0..4.
+    SetDrumStep(u8, u8, u8),
+    ClearDrums,
     CopyBassToGuitar,
     /// Back to the start of the loop.
     Restart,
@@ -171,6 +230,15 @@ pub struct BandEvents {
     pub beats_per_bar: u32,
     pub bass: Vec<(f32, u8)>,
     pub guitar: Vec<(f32, u8)>,
+    pub drums: DrumGrid,
+    /// Where the chosen style plays within a bar (beats), for drawing.
+    pub bass_hits: Vec<f32>,
+    pub guitar_hits: Vec<f32>,
+    /// Peaks of the recorded take (empty: none) and whether it fits the current tempo and loop.
+    pub bass_wave: Vec<f32>,
+    pub guitar_wave: Vec<f32>,
+    pub bass_wave_ok: bool,
+    pub guitar_wave_ok: bool,
 }
 
 impl BandEvents {
@@ -344,8 +412,44 @@ enum Rec {
     Recording(Track),
 }
 
+/// One recorded take of a track.
+struct Clip {
+    data: Vec<f32>,
+    len: usize,
+    bpm: f32,
+    loop_beats: f32,
+    wave: Vec<f32>,
+}
+
+impl Clip {
+    fn new(cap: usize) -> Self {
+        Self { data: vec![0.0; cap], len: 0, bpm: 0.0, loop_beats: 0.0, wave: Vec::new() }
+    }
+
+    fn fits(&self, bpm: f32, loop_beats: f32) -> bool {
+        self.len > 0 && (self.bpm - bpm).abs() < 1e-3 && (self.loop_beats - loop_beats).abs() < 1e-3
+    }
+}
+
+fn peaks(x: &[f32]) -> Vec<f32> {
+    const BINS: usize = 480;
+    (0..BINS)
+        .map(|i| {
+            let (a, b) = (i * x.len() / BINS, ((i + 1) * x.len() / BINS).max(i * x.len() / BINS + 1).min(x.len()));
+            x[a.min(b)..b].iter().fold(0.0f32, |m, v| m.max(v.abs()))
+        })
+        .collect()
+}
+
 pub struct Band {
     sr: f32,
+    grid: DrumGrid,
+    bass_clip: Clip,
+    gtr_clip: Clip,
+    rec_data: Vec<f32>,
+    rec_len: usize,
+    rec_peak: f32,
+    loop_len: usize,
     s: BandSettings,
     running: bool,
     /// Beats since the loop began.
@@ -401,8 +505,16 @@ pub struct Band {
 impl Band {
     pub fn new(sr: f32) -> Self {
         let cap = (sr / 55.0) as usize + 8;
+        let clip_cap = (sr * 49.0) as usize;
         let mut b = Self {
             sr,
+            grid: grid_of(&RHYTHMS[0]),
+            bass_clip: Clip::new(clip_cap),
+            gtr_clip: Clip::new(clip_cap),
+            rec_data: vec![0.0; clip_cap],
+            rec_len: 0,
+            rec_peak: 0.0,
+            loop_len: 0,
             s: BandSettings::default(),
             running: false,
             pos: 0.0,
@@ -455,6 +567,7 @@ impl Band {
             gtr_lp: 0.0,
         };
         b.rebuild();
+        b.update_len();
         b
     }
 
@@ -469,19 +582,14 @@ impl Band {
         let r = &RHYTHMS[self.s.rhythm.min(RHYTHMS.len() - 1)];
         self.bpb = r.beats;
         self.loop_beats = (self.s.bars.clamp(1, 8) * r.beats) as f32;
-        let step_of = |len: usize| r.beats as f32 / len as f32;
+        let step = r.beats as f32 / self.grid.steps as f32;
         let mut d: Vec<(f32, Drum, f32)> = Vec::new();
-        for (pat, kind) in [(r.kick, Drum::Kick), (r.snare, Drum::Snare), (r.hat, Drum::Hat), (r.open, Drum::Open), (r.rim, Drum::Rim), (r.ride, Drum::Ride)] {
-            for (i, c) in pat.chars().enumerate() {
-                let v = match c {
-                    'X' => 1.0,
-                    'x' => 0.8,
-                    'o' => 0.55,
-                    'g' => 0.3,
-                    _ => continue,
-                };
-                let t = i as f32 * step_of(pat.len());
-                d.push((self.swing_t(t), kind, v));
+        for (row, kind) in [Drum::Kick, Drum::Snare, Drum::Hat, Drum::Open, Drum::Rim, Drum::Ride].into_iter().enumerate() {
+            for i in 0..self.grid.steps {
+                let lv = self.grid.rows[row][i].min(4) as usize;
+                if lv > 0 {
+                    d.push((self.swing_t(i as f32 * step), kind, LEVEL_VEL[lv]));
+                }
             }
         }
         d.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -567,6 +675,19 @@ impl Band {
         self.bass_part.style = s.bass_style.min(BASS_STYLES.len() - 1);
         self.gtr_part.style = s.guitar_style.min(GUITAR_STYLES.len() - 1);
         let bpb_before = self.bpb;
+        if old.rhythm != self.s.rhythm {
+            self.grid = grid_of(&RHYTHMS[self.s.rhythm]);
+            self.dirty = true;
+        }
+        for (t, was, now) in [(Track::Bass, old.bass_src, self.s.bass_src), (Track::Guitar, old.guitar_src, self.s.guitar_src)] {
+            if was != now {
+                if matches!(self.rec, Some(Rec::Armed(r) | Rec::Recording(r)) if r == t) {
+                    self.rec = None;
+                    self.rec_buf.clear();
+                }
+                self.dirty = true;
+            }
+        }
         if old.rhythm != self.s.rhythm || old.bars != self.s.bars || old.bass_style != self.s.bass_style || old.guitar_style != self.s.guitar_style {
             self.rebuild();
         }
@@ -601,6 +722,25 @@ impl Band {
         if old.chord != self.s.chord {
             self.update_key();
         }
+        if old.bpm != self.s.bpm || old.bars != self.s.bars || old.rhythm != self.s.rhythm {
+            self.update_len();
+            self.dirty = true; // whether the takes still fit changes
+            if matches!(self.rec, Some(Rec::Recording(_))) && self.rec_len != self.loop_len {
+                self.rec_len = 0; // the pass no longer matches the loop; it will be discarded
+            }
+        }
+    }
+
+    fn update_len(&mut self) {
+        let n = (self.loop_beats as f64 * 60.0 / self.s.bpm as f64 * self.sr as f64).round() as usize;
+        self.loop_len = n.min(self.bass_clip.data.len());
+    }
+
+    fn src(&self, t: Track) -> Source {
+        match t {
+            Track::Bass => self.s.bass_src,
+            Track::Guitar => self.s.guitar_src,
+        }
     }
 
     pub fn command(&mut self, c: BandCmd, meters: &Meters) {
@@ -617,11 +757,55 @@ impl Band {
                 self.rec_buf.clear();
             }
             BandCmd::Clear(t) => {
-                match t {
-                    Track::Bass => self.bass_part.events.clear(),
-                    Track::Guitar => self.gtr_part.events.clear(),
+                if self.src(t) == Source::Audio {
+                    match t {
+                        Track::Bass => self.bass_clip.len = 0,
+                        Track::Guitar => self.gtr_clip.len = 0,
+                    }
+                } else {
+                    match t {
+                        Track::Bass => self.bass_part.events.clear(),
+                        Track::Guitar => self.gtr_part.events.clear(),
+                    }
+                    self.update_key();
+                }
+                self.dirty = true;
+            }
+            BandCmd::SetRoot(t, pos, pc) => {
+                let q = self.snap(pos.rem_euclid(self.loop_beats));
+                let ev = match t {
+                    Track::Bass => &mut self.bass_part.events,
+                    Track::Guitar => &mut self.gtr_part.events,
+                };
+                ev.retain(|e| (e.0 - q).abs() > 1e-3);
+                ev.push((q, pc % 12));
+                ev.sort_by(|a, b| a.0.total_cmp(&b.0));
+                self.update_key();
+                self.dirty = true;
+            }
+            BandCmd::RemoveRoot(t, pos) => {
+                let ev = match t {
+                    Track::Bass => &mut self.bass_part.events,
+                    Track::Guitar => &mut self.gtr_part.events,
+                };
+                if let Some(i) = (0..ev.len()).min_by(|&a, &b| (ev[a].0 - pos).abs().total_cmp(&(ev[b].0 - pos).abs())) {
+                    if (ev[i].0 - pos).abs() < 0.3 {
+                        ev.remove(i);
+                    }
                 }
                 self.update_key();
+                self.dirty = true;
+            }
+            BandCmd::SetDrumStep(row, step, level) => {
+                if (row as usize) < 6 && (step as usize) < self.grid.steps {
+                    self.grid.rows[row as usize][step as usize] = level.min(4);
+                    self.rebuild();
+                    self.dirty = true;
+                }
+            }
+            BandCmd::ClearDrums => {
+                self.grid.rows = [[0; MAX_STEPS]; 6];
+                self.rebuild();
                 self.dirty = true;
             }
             BandCmd::CopyBassToGuitar => {
@@ -815,7 +999,10 @@ impl Band {
     }
 
     fn on_note(&mut self, pc: u8, lag: f32) {
-        let Some(Rec::Recording(_)) = self.rec else { return };
+        let Some(Rec::Recording(t)) = self.rec else { return };
+        if self.src(t) != Source::Style {
+            return;
+        }
         let bps = self.s.bpm / 60.0;
         let t = (self.pos as f32 - lag * bps).rem_euclid(self.loop_beats);
         let t = self.snap(t);
@@ -833,6 +1020,12 @@ impl Band {
             Some(Rec::Armed(t)) => {
                 self.rec = Some(Rec::Recording(t));
                 self.rec_buf.clear();
+                self.rec_len = self.loop_len;
+                self.rec_peak = 0.0;
+            }
+            Some(Rec::Recording(t)) if self.src(t) == Source::Audio => {
+                self.commit_audio(t);
+                self.rec = None;
             }
             Some(Rec::Recording(t)) => {
                 if !self.rec_buf.is_empty() {
@@ -852,6 +1045,30 @@ impl Band {
         self.reset_cursors();
     }
 
+    /// Keeps the pass just recorded as the track's take, unless it is empty or the loop changed.
+    fn commit_audio(&mut self, t: Track) {
+        let n = self.rec_len;
+        if n == 0 || n != self.loop_len || self.rec_peak < 0.004 {
+            return;
+        }
+        let f = ((0.003 * self.sr) as usize).min(n / 2);
+        for i in 0..f {
+            let g = i as f32 / f as f32;
+            self.rec_data[i] *= g;
+            self.rec_data[n - 1 - i] *= g;
+        }
+        let clip = match t {
+            Track::Bass => &mut self.bass_clip,
+            Track::Guitar => &mut self.gtr_clip,
+        };
+        std::mem::swap(&mut clip.data, &mut self.rec_data);
+        clip.len = n;
+        clip.bpm = self.s.bpm;
+        clip.loop_beats = self.loop_beats;
+        clip.wave = peaks(&clip.data[..n]);
+        self.dirty = true;
+    }
+
     // ---- the audio ---------------------------------------------------------------------------
 
     /// Adds the band to `buf`.
@@ -869,9 +1086,23 @@ impl Band {
         }
         let dt = 1.0 / self.sr;
         let advance = self.s.bpm as f64 / 60.0 / self.sr as f64;
-        let (dv, bv, gv) = (self.s.drums * 0.8, self.s.bass * 0.55 * 1.4, self.s.guitar);
+        let any_solo = self.s.solo.iter().any(|&v| v);
+        let aud = |i: usize| (!self.s.mute[i] && (!any_solo || self.s.solo[i])) as u8 as f32;
+        let (dv, bv, gv) = (self.s.drums * 0.8 * aud(0), self.s.bass * 0.55 * 1.4 * aud(1), self.s.guitar * aud(2));
+        let (cb, cg) = (self.s.bass * aud(1), self.s.guitar * aud(2));
+        let rec_t = match self.rec {
+            Some(Rec::Recording(t)) => Some(t),
+            _ => None,
+        };
+        let rec_audio = rec_t.filter(|&t| self.src(t) == Source::Audio);
+        // a take plays back only if it fits the loop, and not while it is being replaced
+        let bass_clip_on = self.s.bass_src == Source::Audio && rec_audio != Some(Track::Bass) && self.bass_clip.fits(self.s.bpm, self.loop_beats);
+        let gtr_clip_on = self.s.guitar_src == Source::Audio && rec_audio != Some(Track::Guitar) && self.gtr_clip.fits(self.s.bpm, self.loop_beats);
+        let (style_bass, style_gtr) = (self.s.bass_src == Source::Style, self.s.guitar_src == Source::Style);
+        let mut levels = [0.0f32; 3];
         let bpb = self.bpb as f64;
         for x in buf.iter_mut() {
+            let player = *x;
             self.sample_no += 1;
             self.pos += advance;
             if self.pos >= self.loop_beats as f64 {
@@ -981,8 +1212,25 @@ impl Band {
                 self.scratch_t += dt;
             }
             self.gtr_lp += 0.4 * (g - self.gtr_lp);
-            *x += (d * dv + b * bv + self.gtr_lp * gv * 1.6).clamp(-1.2, 1.2).tanh();
+            let (sb, sg) = (if style_bass { b * bv } else { 0.0 }, if style_gtr { self.gtr_lp * gv * 1.6 } else { 0.0 });
+            let idx = if self.loop_len > 0 { ((self.pos / self.loop_beats as f64 * self.loop_len as f64) as usize).min(self.loop_len - 1) } else { 0 };
+            let (mut ab, mut ag) = (0.0, 0.0);
+            if bass_clip_on {
+                ab = self.bass_clip.data[idx] * cb;
+            }
+            if gtr_clip_on {
+                ag = self.gtr_clip.data[idx] * cg;
+            }
+            if let (Some(_), true) = (rec_audio, self.rec_len == self.loop_len && self.loop_len > 0) {
+                self.rec_data[idx] = player;
+                self.rec_peak = self.rec_peak.max(player.abs());
+            }
+            levels[0] = levels[0].max((d * dv).abs());
+            levels[1] = levels[1].max((sb + ab).abs());
+            levels[2] = levels[2].max((sg + ag).abs());
+            *x += (d * dv + sb + sg).clamp(-1.2, 1.2).tanh() + ab + ag;
         }
+        meters.set_band_levels(levels);
         let rec = match self.rec {
             None => (0, 0),
             Some(Rec::Armed(t)) => (t as u32, 0),
@@ -990,7 +1238,19 @@ impl Band {
         };
         meters.set_band_pos(self.pos as f32, rec);
         if self.dirty {
-            let ev = BandEvents { loop_beats: self.loop_beats, beats_per_bar: self.bpb, bass: self.bass_part.events.clone(), guitar: self.gtr_part.events.clone() };
+            let ev = BandEvents {
+                loop_beats: self.loop_beats,
+                beats_per_bar: self.bpb,
+                bass: self.bass_part.events.clone(),
+                guitar: self.gtr_part.events.clone(),
+                drums: self.grid.clone(),
+                bass_hits: self.bass_ev.iter().map(|e| e.0).collect(),
+                guitar_hits: self.gtr_ev.iter().map(|e| e.0).collect(),
+                bass_wave: if self.bass_clip.len > 0 { self.bass_clip.wave.clone() } else { Vec::new() },
+                guitar_wave: if self.gtr_clip.len > 0 { self.gtr_clip.wave.clone() } else { Vec::new() },
+                bass_wave_ok: self.bass_clip.fits(self.s.bpm, self.loop_beats),
+                guitar_wave_ok: self.gtr_clip.fits(self.s.bpm, self.loop_beats),
+            };
             self.dirty = !meters.set_band_events(&ev);
         }
     }
@@ -1184,6 +1444,104 @@ mod tests {
         assert_eq!([q(9), q(2), q(4)], [Quality::Major, Quality::Major, Quality::Major]);
         let q = diatonic_qualities(&[2, 7, 0, 9]); // Dm Gm C Am -> D minor
         assert_eq!(q(2), Quality::Minor);
+    }
+
+    #[test]
+    fn a_recorded_take_loops_back_where_it_was_played() {
+        let mut b = Band::new(SR);
+        let m = Meters::default();
+        // 1 bar at 120 bpm = 2 s; the bass track plays what you record
+        b.configure(BandSettings { bass: 1.0, bars: 1, bass_src: Source::Audio, ..settings() });
+        b.command(BandCmd::Record(Track::Bass), &m);
+        // wait for the top of the loop, with silence in
+        render(&mut b, &m, 2.02);
+        assert_eq!(m.band_rec(), (1, 1));
+        // play a 220 Hz burst in the second half of the pass (1.0 s .. 1.5 s)
+        let mut got = Vec::new();
+        for k in 0..(2.0 * SR / 64.0) as usize {
+            let mut blk = [0.0f32; 64];
+            for (j, v) in blk.iter_mut().enumerate() {
+                let t = (k * 64 + j) as f32 / SR;
+                if (1.0..1.5).contains(&t) {
+                    *v = 0.5 * (TAU * 220.0 * t).sin();
+                }
+            }
+            b.process(&mut blk, &m);
+            got.extend_from_slice(&blk);
+        }
+        assert_eq!(m.band_rec(), (0, 0));
+        assert!(m.band_events().bass_wave_ok);
+        // now silence in: the take comes back at the same place in the loop
+        let x = render(&mut b, &m, 2.0);
+        let first = energy(&x[..(SR * 0.9) as usize]);
+        let burst = energy(&x[(SR * 1.1) as usize..(SR * 1.4) as usize]);
+        assert!(first < 0.01 && burst > 100.0, "{first} {burst}");
+        assert!((period_hz(&x[(SR * 1.1) as usize..(SR * 1.4) as usize], 100.0, 500.0) - 220.0).abs() < 5.0);
+        // it does not play while the source is style, and clear removes it
+        b.configure(BandSettings { bass: 1.0, bars: 1, bass_src: Source::Style, ..settings() });
+        assert!(energy(&render(&mut b, &m, 2.0)) < 1e-6);
+        b.configure(BandSettings { bass: 1.0, bars: 1, bass_src: Source::Audio, ..settings() });
+        b.command(BandCmd::Clear(Track::Bass), &m);
+        assert!(energy(&render(&mut b, &m, 2.0)) < 1e-6);
+    }
+
+    #[test]
+    fn a_take_made_at_another_tempo_stays_silent() {
+        let mut b = Band::new(SR);
+        let m = Meters::default();
+        b.configure(BandSettings { bass: 1.0, bars: 1, bass_src: Source::Audio, ..settings() });
+        b.command(BandCmd::Record(Track::Bass), &m);
+        let mut blk = [0.3f32; 64];
+        for _ in 0..(5.0 * SR / 64.0) as usize {
+            blk.fill(0.3);
+            b.process(&mut blk, &m);
+        }
+        assert!(m.band_events().bass_wave_ok);
+        b.configure(BandSettings { bass: 1.0, bars: 1, bpm: 90.0, bass_src: Source::Audio, ..settings() });
+        render(&mut b, &m, 0.1);
+        assert!(!m.band_events().bass_wave_ok);
+        assert!(energy(&render(&mut b, &m, 2.0)) < 1e-6);
+    }
+
+    #[test]
+    fn mute_and_solo_pick_what_is_heard() {
+        let run = |mute: [bool; 3], solo: [bool; 3]| {
+            let mut b = Band::new(SR);
+            let m = Meters::default();
+            b.configure(BandSettings { drums: 1.0, mute, solo, ..settings() });
+            energy(&render(&mut b, &m, 2.0))
+        };
+        assert!(run([false; 3], [false; 3]) > 1.0);
+        assert!(run([true, false, false], [false; 3]) < 1e-6);
+        assert!(run([false; 3], [false, true, false]) < 1e-6);
+        assert!(run([false; 3], [true, false, false]) > 1.0);
+    }
+
+    #[test]
+    fn drum_steps_can_be_edited_and_roots_placed_by_hand() {
+        let mut b = Band::new(SR);
+        let m = Meters::default();
+        b.configure(BandSettings { drums: 1.0, rhythm: 0, ..settings() });
+        b.command(BandCmd::ClearDrums, &m);
+        assert!(energy(&render(&mut b, &m, 1.0)) < 1e-6);
+        b.command(BandCmd::SetDrumStep(0, 4, 4), &m); // a kick on beat 2
+        let x = render(&mut b, &m, 2.0);
+        assert!(energy(&x) > 1.0);
+        render(&mut b, &m, 0.05);
+        assert_eq!(m.band_events().drums.rows[0][4], 4);
+        // roots by hand: rounded to the grid, replaced, removed
+        b.configure(BandSettings { snap: Snap::Beat, bass: 1.0, ..settings() });
+        b.command(BandCmd::SetRoot(Track::Bass, 0.1, 9), &m);
+        b.command(BandCmd::SetRoot(Track::Bass, 4.9, 4), &m);
+        assert_eq!(b.events(Track::Bass), &[(0.0, 9), (5.0, 4)]);
+        b.command(BandCmd::SetRoot(Track::Bass, 5.2, 7), &m);
+        assert_eq!(b.events(Track::Bass), &[(0.0, 9), (5.0, 7)]);
+        b.command(BandCmd::RemoveRoot(Track::Bass, 5.1), &m);
+        assert_eq!(b.events(Track::Bass), &[(0.0, 9)]);
+        // changing the rhythm loads that rhythm's drum loop again
+        b.configure(BandSettings { rhythm: 2, ..settings() });
+        assert_eq!(b.grid.rows[0][4], 4);
+        assert_eq!(b.grid.rows[0][1], 0);
     }
 
     #[test]
