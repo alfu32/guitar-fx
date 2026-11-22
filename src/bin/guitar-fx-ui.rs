@@ -861,6 +861,11 @@ impl eframe::App for App {
                     });
                 });
                 ui.add_space(6.0);
+                if ui.button("Forget what I played").on_hover_text("Start listening afresh: key, tempo and chord").clicked() {
+                    if let Some(r) = &self.running {
+                        r.control.meters.reset_listener();
+                    }
+                }
                 ui.horizontal(|ui| {
                     let known = a.tempo > 0.0 && a.tempo_conf >= 0.15;
                     let (rect, _) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::hover());
@@ -914,6 +919,12 @@ impl eframe::App for App {
                 ui.horizontal(|ui| {
                     if ui.selectable_label(b.on, if b.on { "■ Playing" } else { "▶ Start the band" }).clicked() {
                         b.on = !b.on;
+                    }
+                    if ui.button("Forget").on_hover_text("Forget the tempo, key and chord it learned and start over").clicked() {
+                        b.restart = true;
+                        if let Some(r) = &self.running {
+                            r.control.meters.reset_listener();
+                        }
                     }
                     if ui.add_enabled(b.on, egui::Button::new("1  Restart bar")).on_hover_text("Press on your downbeat to start the bar here").clicked() {
                         b.restart = true;

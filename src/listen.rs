@@ -9,7 +9,7 @@
 //!   autocorrelated over the last 8 s; a prior around 110 BPM picks between a tempo and its
 //!   double or half. The beat phase is the comb alignment with the strongest onsets.
 //! - Chroma: a 4096-point FFT of the signal decimated to about 12 kHz, spectral peaks folded
-//!   into the 12 pitch classes. A fast average feeds the chord, a slow one (12 s half-life) the key.
+//!   into the 12 pitch classes. A fast average feeds the chord, a slow one (6 s half-life) the key.
 //! - Key/mode: the slow chroma is correlated with a profile of each of the 7 modes on each of
 //!   the 12 roots. Relative modes share their notes, so the tonic emphasis decides between them;
 //!   the result carries two confidences, one for the note collection and one for the tonic.
@@ -432,7 +432,7 @@ impl Listener {
             *v /= m;
         }
         let weight = (rms / 0.02).min(1.0);
-        let keep = 0.5f32.powf(FFT_HOP as f32 / self.sr_d / 12.0);
+        let keep = 0.5f32.powf(FFT_HOP as f32 / self.sr_d / 6.0);
         for i in 0..12 {
             self.short[i] = 0.65 * self.short[i] + 0.35 * c[i];
             self.long[i] = self.long[i] * keep + c[i] * weight;
@@ -629,6 +629,7 @@ pub fn spawn(sr: f32, meters: Arc<Meters>) -> ListenTap {
     let _ = std::thread::Builder::new().name("listener".into()).spawn(move || {
         let mut l = Listener::new(sr);
         let mut was_on = false;
+        let mut resets = meters.listener_resets();
         let mut buf = vec![0.0f32; 4096];
         while !flag.load(Relaxed) {
             let on = meters.listening();
@@ -641,6 +642,12 @@ pub fn spawn(sr: f32, meters: Arc<Meters>) -> ListenTap {
             if !was_on {
                 l.reset();
                 was_on = true;
+            }
+            if meters.listener_resets() != resets {
+                resets = meters.listener_resets();
+                l.reset();
+                cons.clear();
+                meters.publish_analysis(l.analysis()); // overwrites anything published mid-reset
             }
             let n = cons.pop_slice(&mut buf);
             if n == 0 {
@@ -774,6 +781,27 @@ mod tests {
             let a = run(&chord(notes), 480);
             assert_eq!(a.chord.map(|c| c.name()).as_deref(), Some(want), "chroma {:?}", a.chroma);
         }
+    }
+
+    #[test]
+    fn reset_makes_it_forget() {
+        let meters: Arc<Meters> = Arc::default();
+        meters.set_listening(true);
+        let mut tap = spawn(SR, meters.clone());
+        for c in chord(&[48.0, 55.0, 60.0, 64.0]).chunks(480) {
+            tap.push(c);
+        }
+        for _ in 0..100 {
+            if meters.analysis().chord.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(meters.analysis().chord.is_some());
+        meters.reset_listener();
+        std::thread::sleep(Duration::from_millis(300));
+        let a = meters.analysis();
+        assert!(a.chord.is_none() && a.key.is_none());
     }
 
     #[test]

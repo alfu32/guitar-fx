@@ -40,6 +40,7 @@ pub struct Meters {
     tuner_on: AtomicBool,
     tuner_mute: AtomicBool,
     listen_on: AtomicBool,
+    listen_reset: AtomicU32,
     analysis: Mutex<Analysis>,
     heard_tempo: AtomicU32,
     heard_conf: AtomicU32,
@@ -64,6 +65,7 @@ impl Default for Meters {
             tuner_on: AtomicBool::default(),
             tuner_mute: AtomicBool::default(),
             listen_on: AtomicBool::default(),
+            listen_reset: AtomicU32::default(),
             analysis: Mutex::default(),
             heard_tempo: AtomicU32::default(),
             heard_conf: AtomicU32::default(),
@@ -144,6 +146,16 @@ impl Meters {
         if !on {
             self.publish_analysis(&Analysis::default());
         }
+    }
+
+    /// Make the Listener forget everything it has heard (key, tempo, chord).
+    pub fn reset_listener(&self) {
+        self.listen_reset.fetch_add(1, Relaxed);
+        self.publish_analysis(&Analysis::default());
+    }
+
+    pub(crate) fn listener_resets(&self) -> u32 {
+        self.listen_reset.load(Relaxed)
     }
 
     pub fn listening(&self) -> bool {

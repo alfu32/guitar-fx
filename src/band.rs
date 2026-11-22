@@ -151,7 +151,10 @@ impl Band {
         if (s.on && !self.s.on) || s.restart {
             self.phase = 0.0;
             self.last_step = -1;
-            if !self.s.on || !s.follow {
+            if s.restart {
+                self.root = None; // forget the old chord; the next one heard decides
+            }
+            if !self.s.on || !s.follow || s.restart {
                 self.bpm = s.bpm.clamp(40.0, 220.0);
             }
         }
