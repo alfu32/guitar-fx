@@ -1805,7 +1805,7 @@ dependencies = [
 
 [[package]]
 name = "guitar-fx"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "acorde-io",
  "acorde-render-svg",

@@ -28,11 +28,13 @@ sed 's|^Icon=.*|Icon=${SNAP}/meta/gui/guitar-fx.png|; s|^Exec=.*|Exec=guitar-fx|
 cat > "$R/meta/snap.yaml" <<Y
 name: guitar-fx
 version: '$V'
-summary: Multi-effect guitar processor with live, low-latency monitoring
+summary: Guitar multi-effect processor with a practice band and live monitoring
 description: |
-  An ordered, repeatable chain of guitar effects (amp models, cabinet impulse
-  responses, noise gate, EQ, modulation, delay, reverb, pitch effects) with live
-  parameter changes, tuner, looper and metronome.
+  A chain of guitar effects (amp models, Neural Amp Modeler captures, cabinet
+  impulse responses, noise gate, EQ, modulation, delay, reverb, pitch effects)
+  with live parameter changes, tuner, looper and metronome, plus a practice band:
+  drums, bass, rhythm, lead and solo guitar and organ on one timeline, shown as
+  waveform, music notation or letters. Save band setups next to your chains.
 base: core24
 architectures: [$SA]
 grade: stable
