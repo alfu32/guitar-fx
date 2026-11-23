@@ -1248,8 +1248,9 @@ impl eframe::App for App {
 
                 // ---- the ruler
                 ui.horizontal_top(|ui| {
-                    ui.allocate_space(egui::vec2(HEAD_W, 14.0));
-                    let (rect, _) = ui.allocate_exact_size(egui::vec2(lane_w, 14.0), egui::Sense::hover());
+                    let (row_left, row_top) = (ui.cursor().left(), ui.cursor().top());
+                    let rect = egui::Rect::from_min_size(egui::pos2(row_left + HEAD_W + ui.spacing().item_spacing.x, row_top), egui::vec2(lane_w, 14.0));
+                    ui.allocate_rect(rect, egui::Sense::hover());
                     let p = ui.painter_at(rect);
                     for bar in 0..b.bars {
                         let x = x_of(rect, bar as f32 * bpb);
@@ -1260,7 +1261,9 @@ impl eframe::App for App {
                 // ---- one row: header on the left, lane on the right
                 // drums
                 ui.horizontal_top(|ui| {
+                    let (row_left, row_top) = (ui.cursor().left(), ui.cursor().top());
                     ui.allocate_ui_with_layout(egui::vec2(HEAD_W, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                        ui.set_clip_rect(ui.clip_rect().intersect(egui::Rect::from_min_size(egui::pos2(row_left, row_top), egui::vec2(HEAD_W, 10000.0))));
                         ui.set_width(HEAD_W - 8.0);
                         ui.horizontal(|ui| {
                             ui.colored_label(amber, egui::RichText::new("Drums").strong());
@@ -1268,7 +1271,7 @@ impl eframe::App for App {
                             ui.toggle_value(&mut b.solo[0], "S").on_hover_text("Solo");
                         });
                         ui.add(egui::Slider::new(&mut b.vol[0], 0.0..=1.0).text("vol"));
-                        ui.add(egui::ProgressBar::new(levels[0].sqrt().min(1.0)).desired_height(4.0));
+                        ui.add(egui::ProgressBar::new(levels[0].sqrt().min(1.0)).desired_height(4.0).desired_width(HEAD_W - 24.0));
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new(RHYTHMS[b.rhythm.min(RHYTHMS.len() - 1)].name).weak());
                             if ui.small_button("✕ clear").clicked() {
@@ -1277,7 +1280,8 @@ impl eframe::App for App {
                         });
                         ui.weak("click: hit · again: accent\nright-click: ghost/soft");
                     });
-                    let (rect, resp) = ui.allocate_exact_size(egui::vec2(lane_w, ROW_H * 6.0), egui::Sense::click());
+                    let rect = egui::Rect::from_min_size(egui::pos2(row_left + HEAD_W + ui.spacing().item_spacing.x, row_top), egui::vec2(lane_w, ROW_H * 6.0));
+                    let resp = ui.allocate_rect(rect, egui::Sense::click());
                     let p = ui.painter_at(rect);
                     p.rect_filled(rect, 3.0, egui::Color32::from_gray(26));
                     let steps = ev.drums.steps.max(1);
@@ -1327,7 +1331,12 @@ impl eframe::App for App {
                 // bass and guitar
                 for track in TRACKS {
                     let ti = track as usize; // 1..5: index into vol/style/src/mute/solo/levels
-                    let title = track.name();
+                    let title = match track {
+                        Track::Guitar => "Rhythm gtr",
+                        Track::Lead => "Lead gtr",
+                        Track::Solo => "Solo gtr",
+                        _ => track.name(),
+                    };
                     let styles = track.styles();
                     let col = match track {
                         Track::Bass => blue,
@@ -1341,7 +1350,9 @@ impl eframe::App for App {
                     let mine = rec_track == track as u32;
                     let audio = *source == Source::Audio;
                     ui.horizontal_top(|ui| {
+                        let (row_left, row_top) = (ui.cursor().left(), ui.cursor().top());
                         let head_h = ui.allocate_ui_with_layout(egui::vec2(HEAD_W, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                            ui.set_clip_rect(ui.clip_rect().intersect(egui::Rect::from_min_size(egui::pos2(row_left, row_top), egui::vec2(HEAD_W, 10000.0))));
                             ui.set_width(HEAD_W - 8.0);
                             ui.horizontal(|ui| {
                                 ui.colored_label(col, egui::RichText::new(title).strong());
@@ -1351,7 +1362,7 @@ impl eframe::App for App {
                                 ui.selectable_value(source, Source::Audio, "Rec").on_hover_text("Your own playing, recorded for one pass and looped");
                             });
                             ui.add(egui::Slider::new(volume, 0.0..=1.0).text("vol"));
-                            ui.add(egui::ProgressBar::new(levels[ti].sqrt().min(1.0)).desired_height(4.0));
+                            ui.add(egui::ProgressBar::new(levels[ti].sqrt().min(1.0)).desired_height(4.0).desired_width(HEAD_W - 24.0));
                             if !audio {
                                 egui::ComboBox::from_id_salt(title).width(HEAD_W - 20.0).selected_text(styles[(*style).min(styles.len() - 1)].0).show_ui(ui, |ui| {
                                     for (i, (n, _)) in styles.iter().enumerate() {
@@ -1422,7 +1433,8 @@ impl eframe::App for App {
                             _ => 62.0,
                         }
                         .max(head_h);
-                        let (rect, resp) = ui.allocate_exact_size(egui::vec2(lane_w, lane_h), egui::Sense::click());
+                        let rect = egui::Rect::from_min_size(egui::pos2(row_left + HEAD_W + ui.spacing().item_spacing.x, row_top), egui::vec2(lane_w, lane_h));
+                        let resp = ui.allocate_rect(rect, egui::Sense::click());
                         let p = ui.painter_at(rect);
                         p.rect_filled(rect, 3.0, egui::Color32::from_gray(26));
                         let grid = egui::Rect::from_min_max(egui::pos2(rect.left() + GUTTER, rect.top()), rect.right_bottom());
