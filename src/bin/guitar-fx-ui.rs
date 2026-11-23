@@ -908,6 +908,108 @@ impl eframe::App for App {
             ctx.request_repaint_after(Duration::from_millis(50));
         }
 
+        let mut load_builtin: Option<usize> = None;
+        let mut load_user: Option<String> = None;
+        let mut new_chain = false;
+        let mut delete_user: Option<String> = None;
+        egui::Panel::left("mine").resizable(true).default_size(230.0).size_range(170.0..=450.0).show(root, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                ui.heading("My chains");
+                if ui.add_sized([200.0, 24.0], egui::Button::new("＋  New chain")).on_hover_text("Remove every effect and start again").clicked() {
+                    new_chain = true;
+                }
+                if self.user_chains.is_empty() {
+                    ui.weak("Nothing saved yet.");
+                }
+                for name in &self.user_chains {
+                    ui.horizontal(|ui| {
+                        if ui.add_sized([170.0, 22.0], egui::Button::new(name)).clicked() {
+                            load_user = Some(name.clone());
+                        }
+                        if ui.small_button("✕").on_hover_text("Delete this saved chain").clicked() {
+                            delete_user = Some(name.clone());
+                        }
+                    });
+                }
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.chain_name).desired_width(100.0));
+                    if ui.button("Save chain").clicked() {
+                        self.save_user_chain();
+                    }
+                });
+                ui.weak("Stored in your config folder.").on_hover_text(Self::chains_dir().display().to_string());
+            });
+        });
+        egui::Panel::right("tools").resizable(true).default_size(270.0).size_range(200.0..=520.0).show(root, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                let groups: [(&str, Vec<&'static EffectDef>); 3] = [
+                    ("Add effect", EFFECTS.iter().filter(|d| !EXPERIMENTAL.contains(&d.name) && !ZEN.contains(&d.name)).collect()),
+                    ("Zen & ethereal", EFFECTS.iter().filter(|d| ZEN.contains(&d.name)).collect()),
+                    ("Experimental", EFFECTS.iter().filter(|d| EXPERIMENTAL.contains(&d.name)).collect()),
+                ];
+                for (g, (title, defs)) in groups.iter().enumerate() {
+                    if g > 0 {
+                        ui.add_space(4.0);
+                    }
+                    ui.heading(*title);
+                    egui::Grid::new(("add-grid", g)).num_columns(2).spacing([6.0, 4.0]).show(ui, |ui| {
+                        for (k, def) in defs.iter().enumerate() {
+                            let color = theme::accent(def.name);
+                            ui.horizontal(|ui| {
+                                theme::effect_icon(ui, def.name, color, 22.0);
+                                let btn = egui::Button::new(egui::RichText::new(def.title).color(color))
+                                    .fill(theme::tint(color, 28))
+                                    .stroke(egui::Stroke::new(1.0, theme::tint(color, 120)));
+                                if ui.add_sized([86.0, 22.0], btn).clicked() {
+                                    acts.push(Act::Add(def));
+                                }
+                            });
+                            if k % 2 == 1 {
+                                ui.end_row();
+                            }
+                        }
+                    });
+                }
+                ui.add_space(6.0);
+                ui.separator();
+                ui.heading("Built-in chains");
+                for (k, (name, text)) in BUILTIN.iter().enumerate() {
+                    let tip = text.lines().next().unwrap_or("").trim_start_matches('#').trim();
+                    if ui.add_sized([250.0, 22.0], egui::Button::new(*name)).on_hover_text(tip).clicked() {
+                        load_builtin = Some(k);
+                    }
+                }
+            });
+        });
+        if let Some(k) = load_builtin {
+            let (name, text) = BUILTIN[k];
+            self.load_chain(text, name);
+        }
+        if new_chain {
+            self.new_chain();
+        }
+        if let Some(name) = load_user {
+            self.load_user_chain(&name);
+        }
+        if let Some(name) = delete_user {
+            let _ = std::fs::remove_file(Self::chains_dir().join(format!("{name}.fx")));
+            self.scan_chains();
+        }
+
+        // Which slot would receive the dragged card (never one that leaves it where it is).
+        let drop_slot: Option<usize> = match (self.dragging, ctx.pointer_interact_pos()) {
+            (Some(i), Some(p)) => self
+                .gap_rects
+                .iter()
+                .enumerate()
+                .filter(|(k, _)| *k != i && *k != i + 1)
+                .min_by(|a, b| (a.1.center().y - p.y).abs().total_cmp(&(b.1.center().y - p.y).abs()))
+                .map(|(k, _)| k),
+            _ => None,
+        };
+        let mut new_gaps: Vec<egui::Rect> = Vec::new();
+        let mut drop_at: Option<(usize, usize)> = None;
+        let mut drag_now: Option<usize> = None;
         if self.band_open {
             let mut open = true;
             let mut b = self.band;
@@ -920,6 +1022,7 @@ impl eframe::App for App {
             let bpb = RHYTHMS[b.rhythm.min(RHYTHMS.len() - 1)].beats.max(1) as f32;
             let loop_beats = (b.bars as f32 * bpb).max(1.0);
             let mut pick = self.band_pick;
+            let count_text = format!("count-in: {}", (-pos).ceil().max(1.0) as i32);
             const HEAD_W: f32 = 236.0;
             const GUTTER: f32 = 58.0;
             const ROW_H: f32 = 15.0;
@@ -928,10 +1031,19 @@ impl eframe::App for App {
             let green = egui::Color32::from_rgb(110, 200, 130);
             let red = egui::Color32::from_rgb(235, 90, 80);
             let note_name = |pc: u8| listen::NOTE_NAMES[pc as usize % 12];
-            egui::Window::new("Band").open(&mut open).collapsible(false).resizable(true).default_width(1000.0).show(&ctx, |ui| {
-                if !running {
-                    ui.label("Press Start first.");
-                }
+            egui::Panel::bottom("band").resizable(true).default_size(380.0).size_range(150.0..=720.0).show(root, |ui| {
+              egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.heading("Band");
+                    if !running {
+                        ui.label("Press Start first.");
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("✕").on_hover_text("Close the mixer").clicked() {
+                            open = false;
+                        }
+                    });
+                });
                 // ---- transport
                 ui.horizontal_wrapped(|ui| {
                     if ui.add_enabled(running, egui::Button::new(if b.on { "■ Stop" } else { "▶ Start" }).selected(b.on)).clicked() {
@@ -942,6 +1054,7 @@ impl eframe::App for App {
                     }
                     ui.add(egui::DragValue::new(&mut b.bpm).range(40.0..=240.0).suffix(" bpm"));
                     ui.add(egui::DragValue::new(&mut b.bars).range(1..=8).suffix(" bars"));
+                    ui.add(egui::DragValue::new(&mut b.count_in).range(0..=4).suffix(" bar count-in")).on_hover_text("Bars of click before a recording starts");
                     ui.label("Drum loop");
                     egui::ComboBox::from_id_salt("rhythm").width(170.0).selected_text(RHYTHMS[b.rhythm.min(RHYTHMS.len() - 1)].name).show_ui(ui, |ui| {
                         for (i, r) in RHYTHMS.iter().enumerate() {
@@ -1155,7 +1268,7 @@ impl eframe::App for App {
                         }
                         if mine {
                             p.rect_stroke(rect, 3.0, egui::Stroke::new(2.0, if rec_stage == 0 { amber } else { red }), egui::StrokeKind::Inside);
-                            p.text(egui::pos2(rect.right() - 8.0, rect.top() + 9.0), egui::Align2::RIGHT_CENTER, if rec_stage == 0 { "waiting for the top of the loop…" } else if audio { "● recording: play your part" } else { "● play the root notes, one at a time" }, egui::FontId::proportional(12.0), if rec_stage == 0 { amber } else { red });
+                            p.text(egui::pos2(rect.right() - 8.0, rect.top() + 9.0), egui::Align2::RIGHT_CENTER, if rec_stage == 0 { count_text.as_str() } else if audio { "● recording: play your part" } else { "● play the root notes, one at a time" }, egui::FontId::proportional(12.0), if rec_stage == 0 { amber } else { red });
                         }
                         if !audio && resp.clicked() {
                             if let Some(pt) = resp.interact_pointer_pos() {
@@ -1175,6 +1288,7 @@ impl eframe::App for App {
                     ui.painter().line_segment([egui::pos2(x, top), egui::pos2(x, bottom)], egui::Stroke::new(2.0, egui::Color32::from_rgb(250, 250, 250)));
                 }
                 ui.weak("Pick a drum loop (click the grid to edit it), then give the bass and the guitar a source: Style (play each chord's root once, or click the lane to place roots; the band plays the chosen style on them) or Rec (record your own playing for one pass).");
+              });
             });
 
             // the note chooser for a clicked spot of a roots lane
@@ -1230,108 +1344,6 @@ impl eframe::App for App {
             ctx.request_repaint_after(Duration::from_millis(40));
         }
 
-        let mut load_builtin: Option<usize> = None;
-        let mut load_user: Option<String> = None;
-        let mut new_chain = false;
-        let mut delete_user: Option<String> = None;
-        egui::Panel::left("mine").resizable(false).default_size(230.0).show(root, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.heading("My chains");
-                if ui.add_sized([200.0, 24.0], egui::Button::new("＋  New chain")).on_hover_text("Remove every effect and start again").clicked() {
-                    new_chain = true;
-                }
-                if self.user_chains.is_empty() {
-                    ui.weak("Nothing saved yet.");
-                }
-                for name in &self.user_chains {
-                    ui.horizontal(|ui| {
-                        if ui.add_sized([170.0, 22.0], egui::Button::new(name)).clicked() {
-                            load_user = Some(name.clone());
-                        }
-                        if ui.small_button("✕").on_hover_text("Delete this saved chain").clicked() {
-                            delete_user = Some(name.clone());
-                        }
-                    });
-                }
-                ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut self.chain_name).desired_width(100.0));
-                    if ui.button("Save chain").clicked() {
-                        self.save_user_chain();
-                    }
-                });
-                ui.weak("Stored in your config folder.").on_hover_text(Self::chains_dir().display().to_string());
-            });
-        });
-        egui::Panel::right("tools").resizable(false).default_size(270.0).show(root, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                let groups: [(&str, Vec<&'static EffectDef>); 3] = [
-                    ("Add effect", EFFECTS.iter().filter(|d| !EXPERIMENTAL.contains(&d.name) && !ZEN.contains(&d.name)).collect()),
-                    ("Zen & ethereal", EFFECTS.iter().filter(|d| ZEN.contains(&d.name)).collect()),
-                    ("Experimental", EFFECTS.iter().filter(|d| EXPERIMENTAL.contains(&d.name)).collect()),
-                ];
-                for (g, (title, defs)) in groups.iter().enumerate() {
-                    if g > 0 {
-                        ui.add_space(4.0);
-                    }
-                    ui.heading(*title);
-                    egui::Grid::new(("add-grid", g)).num_columns(2).spacing([6.0, 4.0]).show(ui, |ui| {
-                        for (k, def) in defs.iter().enumerate() {
-                            let color = theme::accent(def.name);
-                            ui.horizontal(|ui| {
-                                theme::effect_icon(ui, def.name, color, 22.0);
-                                let btn = egui::Button::new(egui::RichText::new(def.title).color(color))
-                                    .fill(theme::tint(color, 28))
-                                    .stroke(egui::Stroke::new(1.0, theme::tint(color, 120)));
-                                if ui.add_sized([86.0, 22.0], btn).clicked() {
-                                    acts.push(Act::Add(def));
-                                }
-                            });
-                            if k % 2 == 1 {
-                                ui.end_row();
-                            }
-                        }
-                    });
-                }
-                ui.add_space(6.0);
-                ui.separator();
-                ui.heading("Built-in chains");
-                for (k, (name, text)) in BUILTIN.iter().enumerate() {
-                    let tip = text.lines().next().unwrap_or("").trim_start_matches('#').trim();
-                    if ui.add_sized([250.0, 22.0], egui::Button::new(*name)).on_hover_text(tip).clicked() {
-                        load_builtin = Some(k);
-                    }
-                }
-            });
-        });
-        if let Some(k) = load_builtin {
-            let (name, text) = BUILTIN[k];
-            self.load_chain(text, name);
-        }
-        if new_chain {
-            self.new_chain();
-        }
-        if let Some(name) = load_user {
-            self.load_user_chain(&name);
-        }
-        if let Some(name) = delete_user {
-            let _ = std::fs::remove_file(Self::chains_dir().join(format!("{name}.fx")));
-            self.scan_chains();
-        }
-
-        // Which slot would receive the dragged card (never one that leaves it where it is).
-        let drop_slot: Option<usize> = match (self.dragging, ctx.pointer_interact_pos()) {
-            (Some(i), Some(p)) => self
-                .gap_rects
-                .iter()
-                .enumerate()
-                .filter(|(k, _)| *k != i && *k != i + 1)
-                .min_by(|a, b| (a.1.center().y - p.y).abs().total_cmp(&(b.1.center().y - p.y).abs()))
-                .map(|(k, _)| k),
-            _ => None,
-        };
-        let mut new_gaps: Vec<egui::Rect> = Vec::new();
-        let mut drop_at: Option<(usize, usize)> = None;
-        let mut drag_now: Option<usize> = None;
         egui::CentralPanel::default().show(root, |ui| {
             if self.chain.is_empty() {
                 ui.centered_and_justified(|ui| {

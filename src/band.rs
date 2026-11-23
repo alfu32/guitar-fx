@@ -189,11 +189,13 @@ pub struct BandSettings {
     pub solo: [bool; 3],
     pub bass_src: Source,
     pub guitar_src: Source,
+    /// Bars of count-in (with a click) before a recording pass starts.
+    pub count_in: u32,
 }
 
 impl Default for BandSettings {
     fn default() -> Self {
-        Self { on: false, rhythm: 0, bpm: 100.0, bars: 4, drums: 0.8, bass: 0.7, guitar: 0.6, bass_style: 2, guitar_style: 1, chord: 0, snap: Snap::Eighth, mute: [false; 3], solo: [false; 3], bass_src: Source::Style, guitar_src: Source::Style }
+        Self { on: false, rhythm: 0, bpm: 100.0, bars: 4, drums: 0.8, bass: 0.7, guitar: 0.6, bass_style: 2, guitar_style: 1, chord: 0, snap: Snap::Eighth, mute: [false; 3], solo: [false; 3], bass_src: Source::Style, guitar_src: Source::Style, count_in: 2 }
     }
 }
 
@@ -206,7 +208,7 @@ pub enum Track {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum BandCmd {
     Settings(BandSettings),
-    /// Record the roots of this part, starting at the next loop start, for one pass.
+    /// Erase the track's current take, go back to the start, count in, then record one pass.
     Record(Track),
     CancelRecord,
     /// Empty what the track currently plays (its roots, or its recording).
@@ -450,6 +452,10 @@ pub struct Band {
     rec_len: usize,
     rec_peak: f32,
     loop_len: usize,
+    click_beat: i64,
+    click_t: f32,
+    click_hz: f32,
+    pre_note: Option<u8>,
     s: BandSettings,
     running: bool,
     /// Beats since the loop began.
@@ -515,6 +521,10 @@ impl Band {
             rec_len: 0,
             rec_peak: 0.0,
             loop_len: 0,
+            click_beat: i64::MIN,
+            click_t: 9.0,
+            click_hz: 1500.0,
+            pre_note: None,
             s: BandSettings::default(),
             running: false,
             pos: 0.0,
@@ -682,8 +692,7 @@ impl Band {
         for (t, was, now) in [(Track::Bass, old.bass_src, self.s.bass_src), (Track::Guitar, old.guitar_src, self.s.guitar_src)] {
             if was != now {
                 if matches!(self.rec, Some(Rec::Armed(r) | Rec::Recording(r)) if r == t) {
-                    self.rec = None;
-                    self.rec_buf.clear();
+                    self.cancel_rec();
                 }
                 self.dirty = true;
             }
@@ -712,8 +721,7 @@ impl Band {
         }
         if !s.on {
             self.running = false;
-            self.rec = None;
-            self.rec_buf.clear();
+            self.cancel_rec();
         } else if !self.running {
             self.running = true;
             self.pos = 0.0;
@@ -728,6 +736,16 @@ impl Band {
             if matches!(self.rec, Some(Rec::Recording(_))) && self.rec_len != self.loop_len {
                 self.rec_len = 0; // the pass no longer matches the loop; it will be discarded
             }
+        }
+    }
+
+    fn cancel_rec(&mut self) {
+        self.rec = None;
+        self.rec_buf.clear();
+        self.pre_note = None;
+        if self.pos < 0.0 {
+            self.pos = 0.0;
+            self.reset_cursors();
         }
     }
 
@@ -748,14 +766,30 @@ impl Band {
             BandCmd::Settings(s) => self.configure(s),
             BandCmd::Record(t) => {
                 if self.running {
-                    self.rec = Some(Rec::Armed(t));
+                    // the previous take goes, the loop goes back to the start, a count-in follows
+                    match (t, self.src(t)) {
+                        (Track::Bass, Source::Audio) => self.bass_clip.len = 0,
+                        (Track::Guitar, Source::Audio) => self.gtr_clip.len = 0,
+                        (Track::Bass, Source::Style) => self.bass_part.events.clear(),
+                        (Track::Guitar, Source::Style) => self.gtr_part.events.clear(),
+                    }
+                    self.update_key();
+                    self.dirty = true;
                     self.rec_buf.clear();
+                    self.pre_note = None;
+                    self.reset_cursors();
+                    self.click_beat = i64::MIN;
+                    self.rec = Some(Rec::Armed(t));
+                    let lead = self.s.count_in.min(4) as f64 * self.bpb as f64;
+                    if lead > 0.0 {
+                        self.pos = -lead;
+                    } else {
+                        self.pos = 0.0;
+                        self.on_loop_wrap();
+                    }
                 }
             }
-            BandCmd::CancelRecord => {
-                self.rec = None;
-                self.rec_buf.clear();
-            }
+            BandCmd::CancelRecord => self.cancel_rec(),
             BandCmd::Clear(t) => {
                 if self.src(t) == Source::Audio {
                     match t {
@@ -814,6 +848,9 @@ impl Band {
                 self.dirty = true;
             }
             BandCmd::Restart => {
+                if matches!(self.rec, Some(Rec::Armed(_))) {
+                    self.cancel_rec();
+                }
                 self.pos = 0.0;
                 self.reset_cursors();
             }
@@ -999,6 +1036,13 @@ impl Band {
     }
 
     fn on_note(&mut self, pc: u8, lag: f32) {
+        if let Some(Rec::Armed(t)) = self.rec {
+            // a root played just ahead of the downbeat belongs to the first beat
+            if self.src(t) == Source::Style && self.pos > -0.3 {
+                self.pre_note = Some(pc);
+            }
+            return;
+        }
         let Some(Rec::Recording(t)) = self.rec else { return };
         if self.src(t) != Source::Style {
             return;
@@ -1022,6 +1066,10 @@ impl Band {
                 self.rec_buf.clear();
                 self.rec_len = self.loop_len;
                 self.rec_peak = 0.0;
+                if let Some(pc) = self.pre_note.take() {
+                    self.rec_buf.push((0.0, pc));
+                    self.update_key();
+                }
             }
             Some(Rec::Recording(t)) if self.src(t) == Source::Audio => {
                 self.commit_audio(t);
@@ -1104,8 +1152,19 @@ impl Band {
         for x in buf.iter_mut() {
             let player = *x;
             self.sample_no += 1;
+            let leading = self.pos < 0.0;
             self.pos += advance;
-            if self.pos >= self.loop_beats as f64 {
+            if leading {
+                let beat = self.pos.floor() as i64;
+                if self.pos < 0.0 && beat != self.click_beat {
+                    self.click_beat = beat;
+                    self.click_t = 0.0;
+                    self.click_hz = if beat.rem_euclid(self.bpb as i64) == 0 { 2200.0 } else { 1500.0 };
+                }
+            }
+            if leading && self.pos >= 0.0 {
+                self.on_loop_wrap();
+            } else if self.pos >= self.loop_beats as f64 {
                 self.pos -= self.loop_beats as f64;
                 self.on_loop_wrap();
             }
@@ -1213,7 +1272,12 @@ impl Band {
             }
             self.gtr_lp += 0.4 * (g - self.gtr_lp);
             let (sb, sg) = (if style_bass { b * bv } else { 0.0 }, if style_gtr { self.gtr_lp * gv * 1.6 } else { 0.0 });
-            let idx = if self.loop_len > 0 { ((self.pos / self.loop_beats as f64 * self.loop_len as f64) as usize).min(self.loop_len - 1) } else { 0 };
+            let idx = if self.loop_len > 0 { ((self.pos.rem_euclid(self.loop_beats as f64) / self.loop_beats as f64 * self.loop_len as f64) as usize).min(self.loop_len - 1) } else { 0 };
+            let mut click = 0.0;
+            if self.click_t < 0.06 {
+                click = (TAU * self.click_hz * self.click_t).sin() * (-self.click_t * 70.0).exp() * 0.5;
+                self.click_t += dt;
+            }
             let (mut ab, mut ag) = (0.0, 0.0);
             if bass_clip_on {
                 ab = self.bass_clip.data[idx] * cb;
@@ -1228,7 +1292,7 @@ impl Band {
             levels[0] = levels[0].max((d * dv).abs());
             levels[1] = levels[1].max((sb + ab).abs());
             levels[2] = levels[2].max((sg + ag).abs());
-            *x += (d * dv + sb + sg).clamp(-1.2, 1.2).tanh() + ab + ag;
+            *x += (d * dv + sb + sg).clamp(-1.2, 1.2).tanh() + ab + ag + click;
         }
         meters.set_band_levels(levels);
         let rec = match self.rec {
@@ -1264,7 +1328,7 @@ mod tests {
     const SR: f32 = 48000.0;
 
     fn settings() -> BandSettings {
-        BandSettings { on: true, bpm: 120.0, bars: 2, drums: 0.0, bass: 0.0, guitar: 0.0, ..Default::default() }
+        BandSettings { on: true, bpm: 120.0, bars: 2, drums: 0.0, bass: 0.0, guitar: 0.0, count_in: 1, ..Default::default() }
     }
 
     fn render(b: &mut Band, m: &Meters, secs: f32) -> Vec<f32> {
@@ -1371,15 +1435,15 @@ mod tests {
         b.configure(BandSettings { bass: 1.0, ..settings() });
         b.command(BandCmd::Record(Track::Bass), &m);
         assert_eq!(b.rec, Some(Rec::Armed(Track::Bass)));
-        // the loop starts again at 4 s; play A at the start of the pass and E at bar 2 (2 s in)
-        play(&mut b, &m, &mut p, 0.0, 4.02, &[]);
+        // one bar of count-in (2 s), then the pass: play A at its start and E at bar 2 (2 s in)
+        play(&mut b, &m, &mut p, 0.0, 2.02, &[]);
         assert_eq!(b.rec, Some(Rec::Recording(Track::Bass)));
-        let live = play(&mut b, &m, &mut p, 4.02, 4.0, &[(4.0, 9), (6.0, 4)]);
+        let live = play(&mut b, &m, &mut p, 2.02, 4.0, &[(2.0, 9), (4.0, 4)]);
         assert_eq!(b.events(Track::Bass), &[(0.0, 9), (4.0, 4)], "recorded at the loop start and at bar 2");
         // the style was already sounding while recording: bar 1 at A1 (55 Hz) right after the note
         assert!((period_hz(&live[(SR * 0.45) as usize..(SR * 0.6) as usize], 30.0, 200.0) - 55.0).abs() < 8.0);
-        // looping now: bar 1 plays A (55 Hz), bar 2 plays E (41.2 Hz); the pass ends at 8 s so measure from there
-        let x = play(&mut b, &m, &mut p, 8.02, 4.0, &[]);
+        // looping now: bar 1 plays A (55 Hz), bar 2 plays E (41.2 Hz); the pass ended at 6 s
+        let x = play(&mut b, &m, &mut p, 6.02, 4.0, &[]);
         let a = period_hz(&x[(SR * 0.06) as usize..(SR * 0.2) as usize], 30.0, 200.0);
         let e = period_hz(&x[(SR * 2.06) as usize..(SR * 2.2) as usize], 30.0, 200.0);
         assert!((a - 55.0).abs() < 8.0, "bar 1: {a}");
@@ -1419,21 +1483,42 @@ mod tests {
     }
 
     #[test]
-    fn nothing_played_keeps_the_old_part_and_clear_empties_it() {
+    fn recording_erases_the_old_take_and_an_empty_pass_leaves_it_empty() {
         let mut b = Band::new(SR);
         let m = Meters::default();
         b.configure(BandSettings { bars: 1, ..settings() });
         b.bass_part.events = vec![(0.0, 7)];
         b.command(BandCmd::Record(Track::Bass), &m);
+        assert!(b.events(Track::Bass).is_empty(), "the old roots go as soon as you record");
         render(&mut b, &m, 4.5);
-        assert_eq!(b.events(Track::Bass), &[(0.0, 7)]);
+        assert!(b.events(Track::Bass).is_empty());
         assert_eq!(m.band_rec(), (0, 0));
-        b.command(BandCmd::Clear(Track::Bass), &m);
-        render(&mut b, &m, 0.1);
-        assert!(m.band_events().bass.is_empty());
         b.bass_part.events = vec![(0.0, 7)];
         b.command(BandCmd::CopyBassToGuitar, &m);
         assert_eq!(b.events(Track::Guitar), &[(0.0, 7)]);
+        b.command(BandCmd::Clear(Track::Bass), &m);
+        render(&mut b, &m, 0.1);
+        assert!(m.band_events().bass.is_empty());
+    }
+
+    #[test]
+    fn recording_counts_in_from_the_start_with_a_click() {
+        let mut b = Band::new(SR);
+        let m = Meters::default();
+        b.configure(BandSettings { bars: 2, count_in: 2, ..settings() });
+        render(&mut b, &m, 3.3); // somewhere in the loop
+        b.command(BandCmd::Record(Track::Guitar), &m);
+        let x = render(&mut b, &m, 1.0);
+        assert!(m.band_pos() < 0.0 && m.band_pos() > -8.0, "the cursor is in the lead-in: {}", m.band_pos());
+        assert_eq!(m.band_rec(), (2, 0), "counting in");
+        assert!(energy(&x) > 0.5, "a click is heard with every other track silent");
+        render(&mut b, &m, 3.05); // 2 bars of 2 s = 4 s of count-in in all
+        assert_eq!(m.band_rec(), (2, 1), "recording");
+        assert!(m.band_pos() > 0.0 && m.band_pos() < 1.0, "at the start of the loop: {}", m.band_pos());
+        b.command(BandCmd::CancelRecord, &m);
+        assert_eq!(m.band_rec().0, 2);
+        render(&mut b, &m, 0.1);
+        assert_eq!(m.band_rec(), (0, 0));
     }
 
     #[test]

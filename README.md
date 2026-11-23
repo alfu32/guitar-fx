@@ -111,6 +111,7 @@ loop (the band names each note and where it fell) or by clicking the lane to pla
 (14 bass styles from whole notes to walking, funk, reggae, boogie; 13 guitar styles: strums, skanks, chops, arpeggios,
 boom-chick...) on those roots, changing root exactly where you indicated. *Rec*: one pass of your own playing is recorded
 (as it comes out of the effect chain) and looped, shown as a waveform; a take is silent if you change the tempo or length afterwards.
+Pressing a record button erases that track's take, returns to the start of the loop, plays a click for the count-in (0-4 bars, default 2) and then records one pass. The mixer sits in a panel at the bottom of the window; the splitters between it, the side panels and the effect chain can be dragged.
 Chord types come from the roots (a major or minor key that contains them) or can be set by hand. While recording roots play single notes
 (one at a time, a low string works best; it names notes from about 60 Hz up). No samples are used. The Listener
 listens to the dry guitar on a separate thread, so it adds no delay; it needs a few
