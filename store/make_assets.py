@@ -46,7 +46,7 @@ def logos():
     p = gradient(720, 1080).convert("RGBA"); p.alpha_composite(icon(420), (150, 200)); d = ImageDraw.Draw(p)
     text(d, (360, 720), "guitar-fx", 84, (255, 255, 255), True, "mm")
     text(d, (360, 800), "Multi-effect guitar processor", 30, ORANGE, False, "mm")
-    text(d, (360, 850), "Amps · cabinets · pedals · looper · tuner", 22, (170, 175, 190), False, "mm")
+    text(d, (360, 850), "Amps · pedals · band · looper · tuner", 22, (170, 175, 190), False, "mm")
     p.convert("RGB").save(OUT / "poster-720x1080.png")
     icon(150).save(OUT / "logo-150x150.png"); icon(71).save(OUT / "logo-71x71.png")
 
@@ -54,8 +54,8 @@ def promo(shot, w, h, name):
     p = gradient(w, h).convert("RGBA"); s = h / 1080
     p.alpha_composite(icon(int(260 * s)), (int(90 * s), int(140 * s))); d = ImageDraw.Draw(p)
     text(d, (int(90 * s), int(480 * s)), "guitar-fx", int(120 * s), (255, 255, 255), True)
-    text(d, (int(90 * s), int(630 * s)), "Build your guitar tone.", int(46 * s), ORANGE)
-    text(d, (int(90 * s), int(700 * s)), "Amps, cabinets, pedals, looper, tuner.", int(34 * s), (170, 175, 190))
+    text(d, (int(90 * s), int(630 * s)), "Build your tone. Play with a band.", int(46 * s), ORANGE)
+    text(d, (int(90 * s), int(700 * s)), "Amps, pedals, drums, bass, guitars, organ.", int(34 * s), (170, 175, 190))
     sh = Image.open(shot).convert("RGBA"); tw = int(w * 0.50); th = int(tw * 1080 / 1920)
     sh = sh.resize((tw, th), Image.LANCZOS); x, y = w - tw - int(60 * s), (h - th) // 2
     d.rounded_rectangle([x - 6, y - 6, x + tw + 6, y + th + 6], radius=14, fill=(60, 66, 84, 255))

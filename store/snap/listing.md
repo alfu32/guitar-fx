@@ -8,7 +8,7 @@ The summary, description and title below are also inside the snap (`meta/snap.ya
 | --- | --- |
 | Name | `guitar-fx` |
 | Title | guitar-fx |
-| Summary (max 78) | Multi-effect guitar processor with live, low-latency monitoring |
+| Summary (max 78) | Guitar multi-effect processor with a practice band and live monitoring |
 | Category | Music and audio |
 | Website | https://github.com/alfu32/guitar-fx |
 | Source code | https://github.com/alfu32/guitar-fx |
@@ -22,12 +22,19 @@ The summary, description and title below are also inside the snap (`meta/snap.ya
 
 ## Description
 
-An ordered, repeatable chain of guitar effects with live monitoring, built for low delay.
+An ordered, repeatable chain of guitar effects with live monitoring, built for low delay, and a synthesized practice band that plays along.
 
 **Tone**
 - Five amp models (clean, crunch, brit, lead, modern) with gain, bass, mid, treble, presence and master. They are modelled amps, not captures of specific hardware.
 - Four built-in cabinets, or load your own impulse responses (.wav files).
 - 24 effects: overdrive, compressor, noise gate, EQ, chorus, flanger, phaser, tremolo, auto-wah, echo, delay, reverb, harmonics, pitch shift, autotune, vocoder, transient shaper, shimmer, wind, bitcrusher, ring modulator and reverse.
+
+**Band**
+- A multitrack mixer on one timeline: drums plus bass, rhythm, lead and solo guitar and organ.
+- 20 drum loops with an editable step grid. Give each track its roots by recording them (with a 1-2 measure count-in) or by placing them, then pick a style: 14 bass, 13 rhythm, 12 lead, 10 solo, 10 organ.
+- Or record a take of your own playing on any track. Mute, solo, volume and a meter per track.
+- View the tracks as a waveform, as music notation (clefs, key, time signature, tempo) or as letters with bar and beat numbers.
+- Save band setups in the My bands list. The Listener names the notes, chord, key and tempo you play.
 
 **Workflow**
 - Drag cards to reorder, bypass any effect, repeat an effect as often as you like, and change parameters live.

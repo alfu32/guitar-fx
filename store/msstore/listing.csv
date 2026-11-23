@@ -1,11 +1,27 @@
 ﻿Field,ID,Type (Type),default,en-us,en
-Description,2,Text,"guitar-fx is a multi-effect processor for electric guitar. Plug your guitar into an audio interface, build a chain of effects, and hear it live while you play. Everything runs on your computer: no account, no internet, no subscription.
+Description,2,Text,"guitar-fx is a multi-effect processor and practice band for electric guitar. Plug your guitar into an audio interface, build a chain of effects, hear it live while you play, and let a synthesized band play along. Everything runs on your computer: no account, no internet, no subscription.
 
 BUILD YOUR TONE
 - Amp models: five voicings (clean, crunch, brit, lead and modern high gain) with gain, bass, mid, treble, presence and master controls. They are modelled amps, not captures of specific hardware.
+- Neural Amp Modeler: load your own .nam captures and run them live.
 - Cabinets: four built-in speaker cabinets, or load your own impulse responses (.wav files).
-- Pedals and studio effects: overdrive, compressor, noise gate, EQ, chorus, flanger, phaser, tremolo, auto-wah, echo, delay, reverb, harmonics, pitch shift, autotune, vocoder and a transient shaper.
+- Pedals and studio effects: overdrive, compressor, noise gate, EQ, chorus, flanger, phaser, tremolo, auto-wah, echo, delay, reverb, harmonics, pitch shift, autotune, vocoder, arpeggiator and a transient shaper.
 - Ambient and experimental: shimmer, wind, bitcrusher, ring modulator and reverse.
+
+A BAND THAT FOLLOWS YOU
+The Band panel is a multitrack mixer on one timeline: a drum track plus bass, rhythm guitar, lead guitar, solo guitar and organ.
+- Pick a drum loop from 20 rhythms and edit its step grid, or tap in your own pattern.
+- Give each track its roots: record them by playing (with a one or two measure count-in) or click the lane to place them.
+- Choose a style for each track from a catalog: 14 bass styles, 13 rhythm guitar, 12 lead, 10 solo and 10 organ styles. The band plays your chords in that style.
+- Record a take of your own playing on any track instead, and loop it with the band.
+- Mute, solo and balance every track, with a level meter on each.
+- Save whole band setups in the My bands list, next to your saved chains.
+
+SEE IT THREE WAYS
+Switch the tracks between a waveform with the live picture of what each one played, real music notation (clefs, key signature, time signature, tempo and measures) and a letter view that shows the notes C D E F G A B against time with bar and beat numbers.
+
+LISTENER
+The Listener names the notes you play, finds the chord, key and tempo, and feeds the Band so it can follow your playing.
 
 A CHAIN YOU CAN SEE
 Every effect is a colour-coded card with its own icon and controls. Drag cards to reorder them, bypass any of them, use the same effect more than once, and watch each one's level as you play. Parameters change live, without dropouts.
@@ -17,17 +33,33 @@ PLAY WITH CONFIDENCE
 - Looper: record, overdub, stop and clear, up to 60 seconds.
 
 START QUICKLY
-More than 20 ready-made chains, from clean sparkle and crunch rhythm to ambient wash and high-gain amp chains. Save your own chains and your last session is restored the next time you open the app.
+More than 20 ready-made chains, from clean sparkle and crunch rhythm to ambient wash and high-gain amp chains. Save your own chains and band setups; your last session is restored the next time you open the app.
 
 NOTES
-Actual latency depends on your audio interface, its Windows driver and the buffer size. A USB audio interface with a guitar (Hi-Z) input and headphones are recommended; speakers near an open microphone can cause feedback.
-","guitar-fx is a multi-effect processor for electric guitar. Plug your guitar into an audio interface, build a chain of effects, and hear it live while you play. Everything runs on your computer: no account, no internet, no subscription.
+Actual latency depends on your audio interface, its Windows driver and the buffer size. A USB audio interface with a guitar (Hi-Z) input and headphones are recommended; speakers near an open microphone can cause feedback. The Listener needs single notes, and works best from about 60 Hz up.
+","guitar-fx is a multi-effect processor and practice band for electric guitar. Plug your guitar into an audio interface, build a chain of effects, hear it live while you play, and let a synthesized band play along. Everything runs on your computer: no account, no internet, no subscription.
 
 BUILD YOUR TONE
 - Amp models: five voicings (clean, crunch, brit, lead and modern high gain) with gain, bass, mid, treble, presence and master controls. They are modelled amps, not captures of specific hardware.
+- Neural Amp Modeler: load your own .nam captures and run them live.
 - Cabinets: four built-in speaker cabinets, or load your own impulse responses (.wav files).
-- Pedals and studio effects: overdrive, compressor, noise gate, EQ, chorus, flanger, phaser, tremolo, auto-wah, echo, delay, reverb, harmonics, pitch shift, autotune, vocoder and a transient shaper.
+- Pedals and studio effects: overdrive, compressor, noise gate, EQ, chorus, flanger, phaser, tremolo, auto-wah, echo, delay, reverb, harmonics, pitch shift, autotune, vocoder, arpeggiator and a transient shaper.
 - Ambient and experimental: shimmer, wind, bitcrusher, ring modulator and reverse.
+
+A BAND THAT FOLLOWS YOU
+The Band panel is a multitrack mixer on one timeline: a drum track plus bass, rhythm guitar, lead guitar, solo guitar and organ.
+- Pick a drum loop from 20 rhythms and edit its step grid, or tap in your own pattern.
+- Give each track its roots: record them by playing (with a one or two measure count-in) or click the lane to place them.
+- Choose a style for each track from a catalog: 14 bass styles, 13 rhythm guitar, 12 lead, 10 solo and 10 organ styles. The band plays your chords in that style.
+- Record a take of your own playing on any track instead, and loop it with the band.
+- Mute, solo and balance every track, with a level meter on each.
+- Save whole band setups in the My bands list, next to your saved chains.
+
+SEE IT THREE WAYS
+Switch the tracks between a waveform with the live picture of what each one played, real music notation (clefs, key signature, time signature, tempo and measures) and a letter view that shows the notes C D E F G A B against time with bar and beat numbers.
+
+LISTENER
+The Listener names the notes you play, finds the chord, key and tempo, and feeds the Band so it can follow your playing.
 
 A CHAIN YOU CAN SEE
 Every effect is a colour-coded card with its own icon and controls. Drag cards to reorder them, bypass any of them, use the same effect more than once, and watch each one's level as you play. Parameters change live, without dropouts.
@@ -39,17 +71,33 @@ PLAY WITH CONFIDENCE
 - Looper: record, overdub, stop and clear, up to 60 seconds.
 
 START QUICKLY
-More than 20 ready-made chains, from clean sparkle and crunch rhythm to ambient wash and high-gain amp chains. Save your own chains and your last session is restored the next time you open the app.
+More than 20 ready-made chains, from clean sparkle and crunch rhythm to ambient wash and high-gain amp chains. Save your own chains and band setups; your last session is restored the next time you open the app.
 
 NOTES
-Actual latency depends on your audio interface, its Windows driver and the buffer size. A USB audio interface with a guitar (Hi-Z) input and headphones are recommended; speakers near an open microphone can cause feedback.
-","guitar-fx is a multi-effect processor for electric guitar. Plug your guitar into an audio interface, build a chain of effects, and hear it live while you play. Everything runs on your computer: no account, no internet, no subscription.
+Actual latency depends on your audio interface, its Windows driver and the buffer size. A USB audio interface with a guitar (Hi-Z) input and headphones are recommended; speakers near an open microphone can cause feedback. The Listener needs single notes, and works best from about 60 Hz up.
+","guitar-fx is a multi-effect processor and practice band for electric guitar. Plug your guitar into an audio interface, build a chain of effects, hear it live while you play, and let a synthesized band play along. Everything runs on your computer: no account, no internet, no subscription.
 
 BUILD YOUR TONE
 - Amp models: five voicings (clean, crunch, brit, lead and modern high gain) with gain, bass, mid, treble, presence and master controls. They are modelled amps, not captures of specific hardware.
+- Neural Amp Modeler: load your own .nam captures and run them live.
 - Cabinets: four built-in speaker cabinets, or load your own impulse responses (.wav files).
-- Pedals and studio effects: overdrive, compressor, noise gate, EQ, chorus, flanger, phaser, tremolo, auto-wah, echo, delay, reverb, harmonics, pitch shift, autotune, vocoder and a transient shaper.
+- Pedals and studio effects: overdrive, compressor, noise gate, EQ, chorus, flanger, phaser, tremolo, auto-wah, echo, delay, reverb, harmonics, pitch shift, autotune, vocoder, arpeggiator and a transient shaper.
 - Ambient and experimental: shimmer, wind, bitcrusher, ring modulator and reverse.
+
+A BAND THAT FOLLOWS YOU
+The Band panel is a multitrack mixer on one timeline: a drum track plus bass, rhythm guitar, lead guitar, solo guitar and organ.
+- Pick a drum loop from 20 rhythms and edit its step grid, or tap in your own pattern.
+- Give each track its roots: record them by playing (with a one or two measure count-in) or click the lane to place them.
+- Choose a style for each track from a catalog: 14 bass styles, 13 rhythm guitar, 12 lead, 10 solo and 10 organ styles. The band plays your chords in that style.
+- Record a take of your own playing on any track instead, and loop it with the band.
+- Mute, solo and balance every track, with a level meter on each.
+- Save whole band setups in the My bands list, next to your saved chains.
+
+SEE IT THREE WAYS
+Switch the tracks between a waveform with the live picture of what each one played, real music notation (clefs, key signature, time signature, tempo and measures) and a letter view that shows the notes C D E F G A B against time with bar and beat numbers.
+
+LISTENER
+The Listener names the notes you play, finds the chord, key and tempo, and feeds the Band so it can follow your playing.
 
 A CHAIN YOU CAN SEE
 Every effect is a colour-coded card with its own icon and controls. Drag cards to reorder them, bypass any of them, use the same effect more than once, and watch each one's level as you play. Parameters change live, without dropouts.
@@ -61,23 +109,20 @@ PLAY WITH CONFIDENCE
 - Looper: record, overdub, stop and clear, up to 60 seconds.
 
 START QUICKLY
-More than 20 ready-made chains, from clean sparkle and crunch rhythm to ambient wash and high-gain amp chains. Save your own chains and your last session is restored the next time you open the app.
+More than 20 ready-made chains, from clean sparkle and crunch rhythm to ambient wash and high-gain amp chains. Save your own chains and band setups; your last session is restored the next time you open the app.
 
 NOTES
-Actual latency depends on your audio interface, its Windows driver and the buffer size. A USB audio interface with a guitar (Hi-Z) input and headphones are recommended; speakers near an open microphone can cause feedback.
+Actual latency depends on your audio interface, its Windows driver and the buffer size. A USB audio interface with a guitar (Hi-Z) input and headphones are recommended; speakers near an open microphone can cause feedback. The Listener needs single notes, and works best from about 60 Hz up.
 "
-ReleaseNotes,3,Text,"Amp models, cabinet impulse responses, noise gate, EQ, tuner, metronome and looper.
-New chain button; drag to reorder effects; level graph in each card; last session restored.
-Fixed the input-to-output delay that could grow during long sessions with some effects.","Amp models, cabinet impulse responses, noise gate, EQ, tuner, metronome and looper.
-New chain button; drag to reorder effects; level graph in each card; last session restored.
-Fixed the input-to-output delay that could grow during long sessions with some effects.","Amp models, cabinet impulse responses, noise gate, EQ, tuner, metronome and looper.
-New chain button; drag to reorder effects; level graph in each card; last session restored.
-Fixed the input-to-output delay that could grow during long sessions with some effects."
+ReleaseNotes,3,Text,"New Band panel: a drum track plus bass, rhythm, lead and solo guitar and organ on one timeline. Record roots with a count-in or place them, pick a style per track, record your own takes, and view the tracks as a waveform, music notation or letters.
+Save band setups in the new My bands list. New Listener window, resizable side panels, Neural Amp Modeler support.","New Band panel: a drum track plus bass, rhythm, lead and solo guitar and organ on one timeline. Record roots with a count-in or place them, pick a style per track, record your own takes, and view the tracks as a waveform, music notation or letters.
+Save band setups in the new My bands list. New Listener window, resizable side panels, Neural Amp Modeler support.","New Band panel: a drum track plus bass, rhythm, lead and solo guitar and organ on one timeline. Record roots with a count-in or place them, pick a style per track, record your own takes, and view the tracks as a waveform, music notation or letters.
+Save band setups in the new My bands list. New Listener window, resizable side panels, Neural Amp Modeler support."
 Title,4,Text,guitar-fx,guitar-fx,guitar-fx
 ShortTitle,5,Text,guitar-fx,guitar-fx,guitar-fx
 SortTitle,6,Text,guitar-fx,guitar-fx,guitar-fx
 VoiceTitle,7,Text,guitar effects,guitar effects,guitar effects
-ShortDescription,8,Text,"A multi-effect guitar processor: amp models, cabinets, pedals, tuner, looper and metronome, with live monitoring.","A multi-effect guitar processor: amp models, cabinets, pedals, tuner, looper and metronome, with live monitoring.","A multi-effect guitar processor: amp models, cabinets, pedals, tuner, looper and metronome, with live monitoring."
+ShortDescription,8,Text,"A guitar multi-effect processor with a practice band: amps, cabinets, pedals, drums, bass, guitars and organ, with live monitoring.","A guitar multi-effect processor with a practice band: amps, cabinets, pedals, drums, bass, guitars and organ, with live monitoring.","A guitar multi-effect processor with a practice band: amps, cabinets, pedals, drums, bass, guitars and organ, with live monitoring."
 DevStudio,9,Text,K3D0,K3D0,K3D0
 CopyrightTrademarkInformation,12,Text,© 2026 K3D0,© 2026 K3D0,© 2026 K3D0
 AdditionalLicenseTerms,13,Text,"guitar-fx is provided ""as is"", without warranty of any kind, express or implied. You may use it for personal and commercial music making. K3D0 is not liable for any damage, data loss or hearing damage arising from its use. Keep your output volume at a safe level, especially with headphones.
@@ -117,12 +162,12 @@ DesktopScreenshot27,126,Relative path (or URL to file in Partner Center),,,
 DesktopScreenshot28,127,Relative path (or URL to file in Partner Center),,,
 DesktopScreenshot29,128,Relative path (or URL to file in Partner Center),,,
 DesktopScreenshot30,129,Relative path (or URL to file in Partner Center),,,
-DesktopScreenshotCaption1,150,Text,"A crunch amp chain: noise gate, amp model, cabinet and reverb. Each effect is a colour-coded card with its own controls.","A crunch amp chain: noise gate, amp model, cabinet and reverb. Each effect is a colour-coded card with its own controls.","A crunch amp chain: noise gate, amp model, cabinet and reverb. Each effect is a colour-coded card with its own controls."
-DesktopScreenshotCaption2,151,Text,"An ambient chain with compressor, chorus, echo and a long reverb. Saved chains are listed under My chains.","An ambient chain with compressor, chorus, echo and a long reverb. Saved chains are listed under My chains.","An ambient chain with compressor, chorus, echo and a long reverb. Saved chains are listed under My chains."
-DesktopScreenshotCaption3,152,Text,"A lead chain: compressor, hot overdrive, slapback delay, echo and reverb, with 20+ built-in chains on the right.","A lead chain: compressor, hot overdrive, slapback delay, echo and reverb, with 20+ built-in chains on the right.","A lead chain: compressor, hot overdrive, slapback delay, echo and reverb, with 20+ built-in chains on the right."
-DesktopScreenshotCaption4,153,Text,"Robot voice: a vocoder and echo, one of the experimental chains.","Robot voice: a vocoder and echo, one of the experimental chains.","Robot voice: a vocoder and echo, one of the experimental chains."
+DesktopScreenshotCaption1,150,Text,"The Band panel: a drum loop and five played tracks on one timeline, shown as waveforms with the live sound of each track.","The Band panel: a drum loop and five played tracks on one timeline, shown as waveforms with the live sound of each track.","The Band panel: a drum loop and five played tracks on one timeline, shown as waveforms with the live sound of each track."
+DesktopScreenshotCaption2,151,Text,"The same band as real music notation: clefs, key signature, time signature, tempo and measures for every track.","The same band as real music notation: clefs, key signature, time signature, tempo and measures for every track.","The same band as real music notation: clefs, key signature, time signature, tempo and measures for every track."
+DesktopScreenshotCaption3,152,Text,"The letter view: notes C to B against time, with bar and beat numbers and chord names.","The letter view: notes C to B against time, with bar and beat numbers and chord names.","The letter view: notes C to B against time, with bar and beat numbers and chord names."
+DesktopScreenshotCaption4,153,Text,"A lead chain: compressor, hot overdrive, delay, echo and reverb, with 20+ built-in chains on the right.","A lead chain: compressor, hot overdrive, delay, echo and reverb, with 20+ built-in chains on the right.","A lead chain: compressor, hot overdrive, delay, echo and reverb, with 20+ built-in chains on the right."
 DesktopScreenshotCaption5,154,Text,"A modern high-gain chain with noise gate, amp, cabinet and EQ.","A modern high-gain chain with noise gate, amp, cabinet and EQ.","A modern high-gain chain with noise gate, amp, cabinet and EQ."
-DesktopScreenshotCaption6,155,Text,"A funk chain: squashed compression, envelope wah and a little drive.","A funk chain: squashed compression, envelope wah and a little drive.","A funk chain: squashed compression, envelope wah and a little drive."
+DesktopScreenshotCaption6,155,Text,"An ambient chain with compressor, chorus, echo and a long reverb.","An ambient chain with compressor, chorus, echo and a long reverb.","An ambient chain with compressor, chorus, echo and a long reverb."
 DesktopScreenshotCaption7,156,Text,,,
 DesktopScreenshotCaption8,157,Text,,,
 DesktopScreenshotCaption9,158,Text,,,
@@ -381,15 +426,15 @@ XboxFeaturedPromo1080x1080,610,Relative path (or URL to file in Partner Center),
 OptionalPromo358x358,611,Relative path (or URL to file in Partner Center),,,
 OptionalPromo1000x800,612,Relative path (or URL to file in Partner Center),,,
 OptionalPromo414x180,613,Relative path (or URL to file in Partner Center),,,
-Feature1,700,Text,"Five amp models: clean, crunch, brit, lead and modern high gain","Five amp models: clean, crunch, brit, lead and modern high gain","Five amp models: clean, crunch, brit, lead and modern high gain"
-Feature2,701,Text,"Four built-in cabinets, plus your own .wav impulse responses","Four built-in cabinets, plus your own .wav impulse responses","Four built-in cabinets, plus your own .wav impulse responses"
-Feature3,702,Text,"24 effects: drive, dynamics, EQ, modulation, delay, reverb, pitch and ambient","24 effects: drive, dynamics, EQ, modulation, delay, reverb, pitch and ambient","24 effects: drive, dynamics, EQ, modulation, delay, reverb, pitch and ambient"
-Feature4,703,Text,Drag-to-reorder effect chain with colour-coded cards and per-effect level meters,Drag-to-reorder effect chain with colour-coded cards and per-effect level meters,Drag-to-reorder effect chain with colour-coded cards and per-effect level meters
-Feature5,704,Text,Live parameter changes while you play,Live parameter changes while you play,Live parameter changes while you play
-Feature6,705,Text,"Noise gate and 3-band EQ with sweepable mid, low-cut and high-cut","Noise gate and 3-band EQ with sweepable mid, low-cut and high-cut","Noise gate and 3-band EQ with sweepable mid, low-cut and high-cut"
-Feature7,706,Text,"Built-in tuner with note, cents and needle display","Built-in tuner with note, cents and needle display","Built-in tuner with note, cents and needle display"
-Feature8,707,Text,Metronome with tap tempo and a looper with overdub,Metronome with tap tempo and a looper with overdub,Metronome with tap tempo and a looper with overdub
-Feature9,708,Text,More than 20 ready-made chains; save your own,More than 20 ready-made chains; save your own,More than 20 ready-made chains; save your own
+Feature1,700,Text,"Band panel: drums, bass, rhythm, lead and solo guitar and organ on one timeline","Band panel: drums, bass, rhythm, lead and solo guitar and organ on one timeline","Band panel: drums, bass, rhythm, lead and solo guitar and organ on one timeline"
+Feature2,701,Text,"Record your own roots with a count-in, or place them; pick a style per track from a catalog","Record your own roots with a count-in, or place them; pick a style per track from a catalog","Record your own roots with a count-in, or place them; pick a style per track from a catalog"
+Feature3,702,Text,"Tracks as a waveform, real music notation or letters with bar and beat numbers","Tracks as a waveform, real music notation or letters with bar and beat numbers","Tracks as a waveform, real music notation or letters with bar and beat numbers"
+Feature4,703,Text,Save band setups next to your saved effect chains,Save band setups next to your saved effect chains,Save band setups next to your saved effect chains
+Feature5,704,Text,"Five amp models, Neural Amp Modeler (.nam) captures and four built-in cabinets","Five amp models, Neural Amp Modeler (.nam) captures and four built-in cabinets","Five amp models, Neural Amp Modeler (.nam) captures and four built-in cabinets"
+Feature6,705,Text,Own .wav impulse responses for cabinets,Own .wav impulse responses for cabinets,Own .wav impulse responses for cabinets
+Feature7,706,Text,Drag-to-reorder effect chain with colour-coded cards and per-effect level meters,Drag-to-reorder effect chain with colour-coded cards and per-effect level meters,Drag-to-reorder effect chain with colour-coded cards and per-effect level meters
+Feature8,707,Text,"Listener: names the notes, chord, key and tempo you play","Listener: names the notes, chord, key and tempo you play","Listener: names the notes, chord, key and tempo you play"
+Feature9,708,Text,"Tuner, metronome with tap tempo, and a looper with overdub","Tuner, metronome with tap tempo, and a looper with overdub","Tuner, metronome with tap tempo, and a looper with overdub"
 Feature10,709,Text,"Works offline: no account, no ads, no data collected","Works offline: no account, no ads, no data collected","Works offline: no account, no ads, no data collected"
 Feature11,710,Text,,,
 Feature12,711,Text,,,
@@ -428,8 +473,8 @@ SearchTerm2,901,Text,guitar amp simulator,guitar amp simulator,guitar amp simula
 SearchTerm3,902,Text,guitar pedalboard,guitar pedalboard,guitar pedalboard
 SearchTerm4,903,Text,guitar tuner,guitar tuner,guitar tuner
 SearchTerm5,904,Text,looper,looper,looper
-SearchTerm6,905,Text,cabinet impulse response,cabinet impulse response,cabinet impulse response
-SearchTerm7,906,Text,multi-effects,multi-effects,multi-effects
+SearchTerm6,905,Text,backing band,backing band,backing band
+SearchTerm7,906,Text,drum machine,drum machine,drum machine
 TrailerToPlayAtTopOfListing,999,Relative path (or URL to file in Partner Center),,,
 Trailer1,1000,Relative path (or URL to file in Partner Center),,,
 Trailer2,1001,Relative path (or URL to file in Partner Center),,,
