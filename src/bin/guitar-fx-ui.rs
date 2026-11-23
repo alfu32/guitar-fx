@@ -1186,7 +1186,7 @@ impl eframe::App for App {
             let wave_live: Vec<f32> = self.running.as_ref().map(|r| r.control.meters.band_wave()).unwrap_or_default();
             let count_text = format!("count-in: {}", (-pos).ceil().max(1.0) as i32);
             const HEAD_W: f32 = 236.0;
-            const GUTTER: f32 = 58.0;
+            const GUTTER: f32 = 72.0;
             const ROW_H: f32 = 15.0;
             let amber = egui::Color32::from_rgb(235, 170, 60);
             let blue = egui::Color32::from_rgb(90, 160, 235);
@@ -1341,7 +1341,7 @@ impl eframe::App for App {
                     let mine = rec_track == track as u32;
                     let audio = *source == Source::Audio;
                     ui.horizontal_top(|ui| {
-                        ui.allocate_ui_with_layout(egui::vec2(HEAD_W, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                        let head_h = ui.allocate_ui_with_layout(egui::vec2(HEAD_W, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
                             ui.set_width(HEAD_W - 8.0);
                             ui.horizontal(|ui| {
                                 ui.colored_label(col, egui::RichText::new(title).strong());
@@ -1378,7 +1378,10 @@ impl eframe::App for App {
                                     cmds.push(BandCmd::Clear(track));
                                 }
                             });
-                        });
+                        })
+                        .response
+                        .rect
+                        .height();
                         // ---- what to draw in this view
                         let notes = &ev.notes[ti - 1];
                         let mut score: Option<(u32, f32)> = None; // (cache key, displayed height)
@@ -1406,7 +1409,9 @@ impl eframe::App for App {
                                     }
                                 }
                                 if let Some(e) = score_cache.get(&(ti as u32)) {
-                                    score = Some((ti as u32, e.size.y * lane_w / e.width));
+                                    // scaled so the first measure starts where the grid starts and the last ends where it ends
+                                    let k = (lane_w - GUTTER) / (e.bar_x[e.bar_x.len() - 1] - e.bar_x[0]).max(1.0);
+                                    score = Some((ti as u32, e.size.y * k));
                                 }
                             }
                         }
@@ -1415,27 +1420,31 @@ impl eframe::App for App {
                             (Some((_, h)), _) => (h + 22.0).max(70.0),
                             (None, true) => 90.0,
                             _ => 62.0,
-                        };
+                        }
+                        .max(head_h);
                         let (rect, resp) = ui.allocate_exact_size(egui::vec2(lane_w, lane_h), egui::Sense::click());
                         let p = ui.painter_at(rect);
                         p.rect_filled(rect, 3.0, egui::Color32::from_gray(26));
                         let grid = egui::Rect::from_min_max(egui::pos2(rect.left() + GUTTER, rect.top()), rect.right_bottom());
                         // beat position -> x, and back, for this lane
-                        let score_map = score.as_ref().and_then(|(k, _)| score_cache.get(k)).map(|e| (e.bar_x.clone(), lane_w / e.width));
+                        let score_map = score.as_ref().and_then(|(k, _)| score_cache.get(k)).map(|e| {
+                            let k = (lane_w - GUTTER) / (e.bar_x[e.bar_x.len() - 1] - e.bar_x[0]).max(1.0);
+                            (e.bar_x.clone(), k, GUTTER - e.bar_x[0] * k)
+                        });
                         let beat_x = |beat: f32| -> f32 {
                             match &score_map {
-                                Some((bx, k)) => {
+                                Some((bx, k, off)) => {
                                     let bar = ((beat / bpb).floor() as usize).min(bx.len().saturating_sub(2));
                                     let f = (beat - bar as f32 * bpb) / bpb;
-                                    rect.left() + (bx[bar] + (bx[bar + 1] - bx[bar]) * f.clamp(0.0, 1.0)) * k
+                                    rect.left() + off + (bx[bar] + (bx[bar + 1] - bx[bar]) * f.clamp(0.0, 1.0)) * k
                                 }
                                 None => x_of(rect, beat),
                             }
                         };
                         let x_beat = |x: f32| -> f32 {
                             match &score_map {
-                                Some((bx, k)) => {
-                                    let xs = (x - rect.left()) / k;
+                                Some((bx, k, off)) => {
+                                    let xs = (x - rect.left() - off) / k;
                                     let bar = (0..bx.len() - 1).find(|&i| xs < bx[i + 1]).unwrap_or(bx.len() - 2);
                                     let f = ((xs - bx[bar]) / (bx[bar + 1] - bx[bar]).max(1.0)).clamp(0.0, 0.999);
                                     (bar as f32 + f) * bpb
@@ -1445,7 +1454,8 @@ impl eframe::App for App {
                         };
                         if let Some((k, h)) = &score {
                             if let Some(e) = score_cache.get(k) {
-                                let img = egui::Rect::from_min_size(egui::pos2(rect.left(), rect.top() + 16.0), egui::vec2(lane_w, *h));
+                                let k = (lane_w - GUTTER) / (e.bar_x[e.bar_x.len() - 1] - e.bar_x[0]).max(1.0);
+                                let img = egui::Rect::from_min_size(egui::pos2(rect.left() + GUTTER - e.bar_x[0] * k, rect.top() + 16.0), egui::vec2(e.width * k, *h));
                                 // the tempo marking: a quarter note = bpm
                                 let (nx, ny) = (rect.left() + 9.0, rect.top() + 9.0);
                                 let ink = ui.visuals().text_color();
