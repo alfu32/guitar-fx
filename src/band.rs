@@ -336,6 +336,31 @@ pub struct BandEvents {
     /// Peaks of the recorded take (empty: none) and whether it fits the current tempo and loop.
     pub wave: [Vec<f32>; 5],
     pub wave_ok: [bool; 5],
+    /// The notes each track's style plays over the loop, for the score and letter views.
+    pub notes: [Vec<NoteHit>; 5],
+    /// Key from the roots: tonic pitch class, minor; and its signature (sharps positive, flats negative).
+    pub key: (u8, bool),
+    pub key_sig: i8,
+}
+
+/// Number of peaks per track in the live waveform.
+pub const WAVE_BINS: usize = 480;
+
+/// One thing a track plays: at `t` beats from the loop start, for `dur` beats, these MIDI notes
+/// (sounding pitch). A chord also names itself: root pitch class and quality (0 major, 1 minor,
+/// 2 dominant 7, 3 minor 7, 4 power).
+#[derive(Clone, Debug, PartialEq)]
+pub struct NoteHit {
+    pub t: f32,
+    pub dur: f32,
+    pub notes: Vec<u8>,
+    pub chord: Option<(u8, u8)>,
+}
+
+/// Sharps (positive) or flats (negative) in the key signature of a key.
+pub fn key_signature(tonic: u8, minor: bool) -> i8 {
+    const MAJOR: [i8; 12] = [0, -5, 2, -3, 4, -1, 6, 1, -4, 3, -2, 5];
+    MAJOR[((tonic as usize) + if minor { 3 } else { 0 }) % 12]
 }
 
 impl BandEvents {
@@ -417,7 +442,7 @@ impl Quality {
 
 /// The diatonic chord quality of each root, judged from all the roots that were played: the key
 /// that contains most of them (major wins a tie; pick Minor yourself when it matters).
-fn diatonic_qualities(roots: &[u8]) -> impl Fn(u8) -> Quality + use<> {
+fn best_key(roots: &[u8]) -> (usize, bool) {
     const MAJOR: [usize; 7] = [0, 2, 4, 5, 7, 9, 11];
     const MINOR: [usize; 7] = [0, 2, 3, 5, 7, 8, 10];
     let mut best = (f32::MIN, 0usize, false);
@@ -442,7 +467,11 @@ fn diatonic_qualities(roots: &[u8]) -> impl Fn(u8) -> Quality + use<> {
             }
         }
     }
-    let (_, tonic, minor) = best;
+    (best.1, best.2)
+}
+
+fn diatonic_qualities(roots: &[u8]) -> impl Fn(u8) -> Quality + use<> {
+    let (tonic, minor) = best_key(roots);
     move |pc: u8| {
         let d = (pc as usize + 12 - tonic) % 12;
         let is_minor = if minor { matches!(d, 0 | 2 | 5 | 7) } else { matches!(d, 2 | 4 | 9 | 11) };
@@ -698,6 +727,26 @@ fn step_vel(t: Track, c: char) -> Option<f32> {
     }
 }
 
+/// The bass note of a style character on a root (an approach note aims at the next root).
+fn bass_midi(c: char, root: u8, q: Quality, next: Option<u8>) -> usize {
+    let midi = |pc: u8| 28 + (pc as usize + 8) % 12;
+    match c.to_ascii_lowercase() {
+        'f' => midi(root) + 7,
+        'o' => midi(root) + 12,
+        't' => midi(root) + if q.minor() { 3 } else { 4 },
+        's' => midi(root) + 9,
+        'a' => match next {
+            // a semitone below the next root, from the same octave
+            Some(n) => {
+                let target = midi(n);
+                if target > 28 { target - 1 } else { target + 11 }
+            }
+            None => midi(root) + 9,
+        },
+        _ => midi(root),
+    }
+}
+
 /// What a part plays where its root changes and its style rests.
 fn default_hit(t: Track) -> char {
     match t {
@@ -858,6 +907,8 @@ pub struct Band {
     click_t: f32,
     click_hz: f32,
     pre_note: Option<u8>,
+    wave_live: Vec<f32>,
+    wave_bin: usize,
     s: BandSettings,
     running: bool,
     /// Beats since the loop began (negative during a count-in).
@@ -918,6 +969,8 @@ impl Band {
             click_t: 9.0,
             click_hz: 1500.0,
             pre_note: None,
+            wave_live: vec![0.0; WAVE_BINS * 6],
+            wave_bin: usize::MAX,
             s: BandSettings::default(),
             running: false,
             pos: 0.0,
@@ -1004,6 +1057,7 @@ impl Band {
             }
             self.parts[t.ix()].pat = v;
         }
+        self.dirty = true;
         self.reset_cursors();
     }
 
@@ -1084,6 +1138,7 @@ impl Band {
         }
         if old.chord != self.s.chord {
             self.update_key();
+            self.dirty = true;
         }
         if old.bpm != self.s.bpm || old.bars != self.s.bars || old.rhythm != self.s.rhythm {
             self.update_len();
@@ -1338,23 +1393,8 @@ impl Band {
     }
 
     fn fire_bass(&mut self, c: char, v: f32, root: u8, q: Quality, pos: f32) {
-        let midi = |pc: u8| 28 + (pc as usize + 8) % 12;
-        let m = match c.to_ascii_lowercase() {
-            'f' => midi(root) + 7,
-            'o' => midi(root) + 12,
-            't' => midi(root) + if q.minor() { 3 } else { 4 },
-            's' => midi(root) + 9,
-            'a' => match next_root(self.events_of(Track::Bass), pos) {
-                // a semitone below the next root, from the same octave
-                Some(n) => {
-                    let target = midi(n);
-                    if target > 28 { target - 1 } else { target + 11 }
-                }
-                None => midi(root) + 9,
-            },
-            _ => midi(root),
-        };
-        self.bass_hz = midi_hz(m as f32);
+        let next = next_root(self.events_of(Track::Bass), pos);
+        self.bass_hz = midi_hz(bass_midi(c, root, q, next) as f32);
         self.bass_t = 0.0;
         self.bass_v = v;
     }
@@ -1429,6 +1469,70 @@ impl Band {
             v.loop_gain = 0.997;
             v.env_k = (-1.0 / (2.2 * sr)).exp();
         }
+    }
+
+    /// The notes a track's style plays over the whole loop, on its roots.
+    fn note_hits(&self, t: Track) -> Vec<NoteHit> {
+        let p = &self.parts[t.ix()];
+        if p.events.is_empty() || self.src(t) == Source::Audio {
+            return Vec::new();
+        }
+        let bpb = self.bpb as f32;
+        let bars = (self.loop_beats / bpb).round().max(1.0) as usize;
+        let mut steps: Vec<(f32, char, f32)> = Vec::new();
+        for bar in 0..bars {
+            for &(bt, c, v) in &p.pat {
+                steps.push((bar as f32 * bpb + bt, c, v));
+            }
+        }
+        for &(rt, _) in &p.events {
+            if !steps.iter().any(|s| (s.0 - rt).abs() < 1e-3) {
+                steps.push((rt, default_hit(t), 0.9));
+            }
+        }
+        steps.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut out = Vec::new();
+        for (i, &(st, c, v)) in steps.iter().enumerate() {
+            if v == 0.0 {
+                continue;
+            }
+            let Some(root) = root_at(&p.events, st, true) else { continue };
+            let q = self.quality(root);
+            let qcode = match q {
+                Quality::Major => 0,
+                Quality::Minor => 1,
+                Quality::Dom7 => 2,
+                Quality::Min7 => 3,
+                Quality::Power => 4,
+            };
+            let (notes, chord): (Vec<u8>, Option<(u8, u8)>) = match t {
+                Track::Bass => (vec![bass_midi(c, root, q, next_root(&p.events, st)) as u8], None),
+                Track::Guitar => {
+                    let (n6, n) = voicing(root, q);
+                    match c {
+                        'x' => (Vec::new(), None),
+                        '1'..='6' => (vec![n6[((c as u8 - b'1') as usize) % n]], None),
+                        'U' | 'u' => (n6[n.saturating_sub(4)..n].to_vec(), Some((root, qcode))),
+                        _ => (n6[..n].to_vec(), Some((root, qcode))),
+                    }
+                }
+                Track::Lead => (vec![(52 + (root as i32 + 8) % 12 + degree(c, q.minor())) as u8], None),
+                Track::Solo => (vec![(52 + (root as i32 + 8) % 12 + degree(c, q.minor())) as u8], None),
+                Track::Organ => (organ_voicing(root, q).to_vec(), Some((root, qcode))),
+            };
+            if notes.is_empty() {
+                continue;
+            }
+            let next = steps.get(i + 1).map(|s| s.0).unwrap_or(self.loop_beats);
+            let cap = match (t, c) {
+                (Track::Organ, 's') | (Track::Guitar, 'c' | 'C') => 0.25,
+                (Track::Bass | Track::Guitar, _) => 1.0,
+                (Track::Lead, _) => 2.0,
+                _ => 4.0,
+            };
+            out.push(NoteHit { t: st, dur: (next - st).min(cap).max(0.125), notes, chord });
+        }
+        out
     }
 
     // ---- recording ---------------------------------------------------------------------------
@@ -1667,6 +1771,26 @@ impl Band {
                 clips += a;
                 levels[i] = levels[i].max((o + a).abs());
             }
+            if self.pos >= 0.0 {
+                let bin = ((self.pos / self.loop_beats as f64 * WAVE_BINS as f64) as usize).min(WAVE_BINS - 1);
+                if bin != self.wave_bin {
+                    self.wave_bin = bin;
+                    for i in 0..6 {
+                        self.wave_live[i * WAVE_BINS + bin] = 0.0;
+                    }
+                }
+                for i in 0..6 {
+                    let mut v = (if style_on[i] { styled[i] * gain[i] } else { 0.0 }).abs();
+                    if i > 0 && clip_on[i - 1] {
+                        v += (self.parts[i - 1].clip.data[idx] * vol[i]).abs();
+                    }
+                    if i > 0 && rec_audio == Some(TRACKS[i - 1]) {
+                        v = player.abs();
+                    }
+                    let c = &mut self.wave_live[i * WAVE_BINS + bin];
+                    *c = c.max(v);
+                }
+            }
             let mut click = 0.0;
             if self.click_t < 0.06 {
                 click = (TAU * self.click_hz * self.click_t).sin() * (-self.click_t * 70.0).exp() * 0.5;
@@ -1679,6 +1803,7 @@ impl Band {
             *x += sum.clamp(-1.2, 1.2).tanh() + clips + click;
         }
         meters.set_band_levels(levels);
+        meters.set_band_wave(&self.wave_live);
         let rec = match self.rec {
             None => (0, 0),
             Some(Rec::Armed(t)) => (t as u32, 0),
@@ -1686,6 +1811,8 @@ impl Band {
         };
         meters.set_band_pos(self.pos as f32, rec);
         if self.dirty {
+            let all: Vec<u8> = self.parts.iter().flat_map(|p| p.events.iter().map(|e| e.1)).collect();
+            let key = if all.is_empty() { (0, false) } else { best_key(&all) };
             let ev = BandEvents {
                 loop_beats: self.loop_beats,
                 beats_per_bar: self.bpb,
@@ -1694,6 +1821,9 @@ impl Band {
                 hits: std::array::from_fn(|k| self.parts[k].pat.iter().filter(|e| e.2 > 0.0).map(|e| e.0).collect()),
                 wave: std::array::from_fn(|k| if self.parts[k].clip.len > 0 { self.parts[k].clip.wave.clone() } else { Vec::new() }),
                 wave_ok: std::array::from_fn(|k| self.parts[k].clip.fits(self.s.bpm, self.loop_beats)),
+                notes: std::array::from_fn(|k| self.note_hits(TRACKS[k])),
+                key: (key.0 as u8, key.1),
+                key_sig: key_signature(key.0 as u8, key.1),
             };
             self.dirty = !meters.set_band_events(&ev);
         }
@@ -2139,6 +2269,37 @@ mod tests {
         assert_eq!(b.events(Track::Organ), &[(0.0, 0)]);
         assert!(b.events(Track::Guitar).is_empty());
         assert_eq!(m.band_events().roots_of(Track::Lead), &[(2.0, 7)]);
+    }
+
+    #[test]
+    fn the_notes_of_a_style_the_key_and_the_live_wave_are_published() {
+        assert_eq!([key_signature(0, false), key_signature(9, true), key_signature(7, false), key_signature(5, false), key_signature(2, true)], [0, 0, 1, -1, -1]);
+        let mut b = Band::new(SR);
+        let m = Meters::default();
+        let mut st = with(settings(), 1, 1.0);
+        st.style[1] = 2; // quarter roots
+        b.configure(st);
+        b.parts[0].events = vec![(0.0, 9), (4.0, 2)]; // A then D, two bars of 4 beats
+        b.update_key();
+        b.dirty = true;
+        render(&mut b, &m, 2.5);
+        let ev = m.band_events();
+        let bass = &ev.notes[0];
+        assert_eq!(bass.len(), 8);
+        assert_eq!((bass[0].t, bass[0].notes.clone()), (0.0, vec![33]), "A1");
+        assert_eq!((bass[4].t, bass[4].notes.clone()), (4.0, vec![38]), "D2");
+        assert!(bass.iter().all(|h| h.dur > 0.9 && h.chord.is_none()));
+        assert_eq!(ev.key_sig, 3, "A and D fit A major");
+        // a chord instrument names its chord
+        b.parts[1].events = vec![(0.0, 9)];
+        b.dirty = true;
+        render(&mut b, &m, 0.1);
+        let g = &m.band_events().notes[1];
+        assert!(g.iter().all(|h| h.chord == Some((9, 0)) && h.notes.len() == 6));
+        // the live wave shows what the bass played: sound at the start of the loop, none yet near the end
+        let w = m.band_wave();
+        let bass_w = &w[WAVE_BINS..2 * WAVE_BINS];
+        assert!(bass_w[..WAVE_BINS / 8].iter().any(|&v| v > 0.05));
     }
 
     #[test]

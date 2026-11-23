@@ -45,6 +45,7 @@ pub struct Meters {
     band_rec: AtomicU32,
     band_events: Mutex<BandEvents>,
     band_levels: [AtomicU32; 6],
+    band_wave: Vec<AtomicU32>,
 }
 
 impl Default for Meters {
@@ -71,6 +72,7 @@ impl Default for Meters {
             band_rec: AtomicU32::default(),
             band_events: Mutex::default(),
             band_levels: Default::default(),
+            band_wave: (0..crate::band::WAVE_BINS * 6).map(|_| AtomicU32::default()).collect(),
             slots: (0..SLOT_METERS).map(|_| AtomicU32::default()).collect(),
         }
     }
@@ -223,6 +225,17 @@ impl Meters {
 
     pub(crate) fn set_band_levels(&self, l: [f32; 6]) {
         for (c, v) in self.band_levels.iter().zip(l) {
+            c.store(v.to_bits(), Relaxed);
+        }
+    }
+
+    /// What each track played over the loop, as peaks (`WAVE_BINS` per track, drums first).
+    pub fn band_wave(&self) -> Vec<f32> {
+        self.band_wave.iter().map(|c| f32::from_bits(c.load(Relaxed))).collect()
+    }
+
+    pub(crate) fn set_band_wave(&self, w: &[f32]) {
+        for (c, v) in self.band_wave.iter().zip(w) {
             c.store(v.to_bits(), Relaxed);
         }
     }

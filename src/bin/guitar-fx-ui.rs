@@ -5,6 +5,7 @@
 mod theme;
 
 use eframe::egui;
+use guitar_fx_core::notation;
 use guitar_fx_core::band::{self, BandCmd, BandEvents, BandSetup, BandSettings, DrumGrid, Snap, Source, Track, CHORD_TYPES, RHYTHMS, TRACKS};
 use guitar_fx_core::chain::{Cmd, Slot};
 use guitar_fx_core::tools::{LoopCmd, LoopState};
@@ -47,6 +48,23 @@ enum Act {
     Add(&'static EffectDef),
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum BandView {
+    Wave,
+    Score,
+    Letters,
+}
+
+/// An engraved score of one track, as a texture.
+struct ScoreTex {
+    key: u64,
+    tex: egui::TextureHandle,
+    /// Size in points, as engraved, and the width it was engraved for.
+    size: egui::Vec2,
+    width: f32,
+    bar_x: Vec<f32>,
+}
+
 struct App {
     chain: Vec<Fx>,
     next_id: u64,
@@ -63,6 +81,8 @@ struct App {
     user_chains: Vec<String>,
     user_bands: Vec<String>,
     band_name: String,
+    band_view: BandView,
+    score_cache: std::collections::HashMap<u32, ScoreTex>,
     /// The drum loop and roots last seen in the running band (kept across Stop/Start and saved).
     band_cache: Option<(DrumGrid, [Vec<(f32, u8)>; 5])>,
     status: String,
@@ -114,6 +134,8 @@ impl App {
             user_chains: Vec::new(),
             user_bands: Vec::new(),
             band_name: "my-band".into(),
+            band_view: BandView::Wave,
+            score_cache: Default::default(),
             band_cache: None,
             status: String::new(),
             shown_in: 0.0,
@@ -1159,6 +1181,9 @@ impl eframe::App for App {
             let bpb = RHYTHMS[b.rhythm.min(RHYTHMS.len() - 1)].beats.max(1) as f32;
             let loop_beats = (b.bars as f32 * bpb).max(1.0);
             let mut pick = self.band_pick;
+            let mut view = self.band_view;
+            let score_cache = &mut self.score_cache;
+            let wave_live: Vec<f32> = self.running.as_ref().map(|r| r.control.meters.band_wave()).unwrap_or_default();
             let count_text = format!("count-in: {}", (-pos).ceil().max(1.0) as i32);
             const HEAD_W: f32 = 236.0;
             const GUTTER: f32 = 58.0;
@@ -1198,6 +1223,10 @@ impl eframe::App for App {
                             ui.selectable_value(&mut b.rhythm, i, r.name);
                         }
                     });
+                    ui.label("View");
+                    ui.selectable_value(&mut view, BandView::Wave, "Waveform").on_hover_text("Roots and what each track plays, as a waveform");
+                    ui.selectable_value(&mut view, BandView::Score, "Score").on_hover_text("Music notation with key, tempo and time signature");
+                    ui.selectable_value(&mut view, BandView::Letters, "Letters").on_hover_text("Note names C D E F G A B against time, with bars and beats");
                     ui.label("Chords");
                     egui::ComboBox::from_id_salt("chord").width(150.0).selected_text(CHORD_TYPES[b.chord.min(CHORD_TYPES.len() - 1)]).show_ui(ui, |ui| {
                         for (i, n) in CHORD_TYPES.iter().enumerate() {
@@ -1216,16 +1245,11 @@ impl eframe::App for App {
                 let lane_w = (ui.available_width() - HEAD_W - 12.0).max(360.0);
                 let grid_w = lane_w - GUTTER;
                 let x_of = |lane: egui::Rect, beat: f32| lane.left() + GUTTER + beat / loop_beats * grid_w;
-                let mut top = f32::MAX;
-                let mut bottom = 0.0f32;
-                let mut lane_left = 0.0f32;
 
                 // ---- the ruler
                 ui.horizontal_top(|ui| {
                     ui.allocate_space(egui::vec2(HEAD_W, 14.0));
                     let (rect, _) = ui.allocate_exact_size(egui::vec2(lane_w, 14.0), egui::Sense::hover());
-                    lane_left = rect.left();
-                    top = top.min(rect.top());
                     let p = ui.painter_at(rect);
                     for bar in 0..b.bars {
                         let x = x_of(rect, bar as f32 * bpb);
@@ -1254,8 +1278,6 @@ impl eframe::App for App {
                         ui.weak("click: hit · again: accent\nright-click: ghost/soft");
                     });
                     let (rect, resp) = ui.allocate_exact_size(egui::vec2(lane_w, ROW_H * 6.0), egui::Sense::click());
-                    top = top.min(rect.top());
-                    bottom = bottom.max(rect.bottom());
                     let p = ui.painter_at(rect);
                     p.rect_filled(rect, 3.0, egui::Color32::from_gray(26));
                     let steps = ev.drums.steps.max(1);
@@ -1278,6 +1300,10 @@ impl eframe::App for App {
                             };
                             p.rect_filled(cell, 2.0, col);
                         }
+                    }
+                    if b.on {
+                        let x = x_of(rect, pos.clamp(0.0, loop_beats));
+                        p.line_segment([egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())], egui::Stroke::new(2.0, egui::Color32::from_rgb(250, 250, 250)));
                     }
                     if resp.clicked() || resp.secondary_clicked() {
                         if let Some(pt) = resp.interact_pointer_pos() {
@@ -1310,7 +1336,7 @@ impl eframe::App for App {
                         Track::Solo => egui::Color32::from_rgb(240, 120, 160),
                         Track::Organ => egui::Color32::from_rgb(80, 205, 205),
                     };
-                    let (hits, (wave, wave_ok), roots) = (ev.hits_of(track), ev.wave_of(track), ev.roots_of(track));
+                    let ((wave, wave_ok), roots) = (ev.wave_of(track), ev.roots_of(track));
                     let (style, volume, source) = (&mut b.style[ti], &mut b.vol[ti], &mut b.src[ti]);
                     let mine = rec_track == track as u32;
                     let audio = *source == Source::Audio;
@@ -1353,19 +1379,90 @@ impl eframe::App for App {
                                 }
                             });
                         });
-                        let lane_h = 62.0;
+                        // ---- what to draw in this view
+                        let notes = &ev.notes[ti - 1];
+                        let mut score: Option<(u32, f32)> = None; // (cache key, displayed height)
+                        let mut score_err: Option<String> = None;
+                        if view == BandView::Score && !audio && !notes.is_empty() {
+                            let spec = notation::ScoreSpec { hits: notes, key_sig: ev.key_sig, minor: ev.key.1, bpm: b.bpm, bars: b.bars, beats_per_bar: bpb as u32, bass: track == Track::Bass };
+                            if let Some(abc) = notation::abc(&spec) {
+                                use std::hash::{Hash, Hasher};
+                                let wq = ((lane_w / 32.0).floor() * 32.0).max(320.0);
+                                let dark = ui.visuals().dark_mode;
+                                let mut h = std::collections::hash_map::DefaultHasher::new();
+                                (&abc, wq as u32, dark).hash(&mut h);
+                                let key = h.finish();
+                                if !score_cache.get(&(ti as u32)).is_some_and(|e| e.key == key) {
+                                    match notation::render(&abc, wq, 5.0, if dark { "#dcdcdc" } else { "#222222" }, b.bars) {
+                                        Ok(r) => {
+                                            let img = egui::ColorImage::from_rgba_premultiplied([r.px_w, r.px_h], &r.rgba);
+                                            let tex = ctx.load_texture(format!("score{ti}"), img, egui::TextureOptions::LINEAR);
+                                            score_cache.insert(ti as u32, ScoreTex { key, tex, size: egui::vec2(r.px_w as f32 / 2.0, r.px_h as f32 / 2.0), width: wq, bar_x: r.bar_x });
+                                        }
+                                        Err(e) => {
+                                            score_cache.remove(&(ti as u32));
+                                            score_err = Some(e);
+                                        }
+                                    }
+                                }
+                                if let Some(e) = score_cache.get(&(ti as u32)) {
+                                    score = Some((ti as u32, e.size.y * lane_w / e.width));
+                                }
+                            }
+                        }
+                        let letters = view == BandView::Letters && !audio;
+                        let lane_h = match (&score, letters) {
+                            (Some((_, h)), _) => (h + 22.0).max(70.0),
+                            (None, true) => 90.0,
+                            _ => 62.0,
+                        };
                         let (rect, resp) = ui.allocate_exact_size(egui::vec2(lane_w, lane_h), egui::Sense::click());
-                        top = top.min(rect.top());
-                        bottom = bottom.max(rect.bottom());
                         let p = ui.painter_at(rect);
                         p.rect_filled(rect, 3.0, egui::Color32::from_gray(26));
                         let grid = egui::Rect::from_min_max(egui::pos2(rect.left() + GUTTER, rect.top()), rect.right_bottom());
-                        for bar in 0..b.bars {
-                            let x = x_of(rect, bar as f32 * bpb);
-                            p.line_segment([egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())], egui::Stroke::new(1.0, egui::Color32::from_gray(48)));
+                        // beat position -> x, and back, for this lane
+                        let score_map = score.as_ref().and_then(|(k, _)| score_cache.get(k)).map(|e| (e.bar_x.clone(), lane_w / e.width));
+                        let beat_x = |beat: f32| -> f32 {
+                            match &score_map {
+                                Some((bx, k)) => {
+                                    let bar = ((beat / bpb).floor() as usize).min(bx.len().saturating_sub(2));
+                                    let f = (beat - bar as f32 * bpb) / bpb;
+                                    rect.left() + (bx[bar] + (bx[bar + 1] - bx[bar]) * f.clamp(0.0, 1.0)) * k
+                                }
+                                None => x_of(rect, beat),
+                            }
+                        };
+                        let x_beat = |x: f32| -> f32 {
+                            match &score_map {
+                                Some((bx, k)) => {
+                                    let xs = (x - rect.left()) / k;
+                                    let bar = (0..bx.len() - 1).find(|&i| xs < bx[i + 1]).unwrap_or(bx.len() - 2);
+                                    let f = ((xs - bx[bar]) / (bx[bar + 1] - bx[bar]).max(1.0)).clamp(0.0, 0.999);
+                                    (bar as f32 + f) * bpb
+                                }
+                                None => ((x - grid.left()) / grid_w * loop_beats).clamp(0.0, loop_beats - 0.01),
+                            }
+                        };
+                        if let Some((k, h)) = &score {
+                            if let Some(e) = score_cache.get(k) {
+                                let img = egui::Rect::from_min_size(egui::pos2(rect.left(), rect.top() + 16.0), egui::vec2(lane_w, *h));
+                                // the tempo marking: a quarter note = bpm
+                                let (nx, ny) = (rect.left() + 9.0, rect.top() + 9.0);
+                                let ink = ui.visuals().text_color();
+                                p.circle_filled(egui::pos2(nx, ny), 2.6, ink);
+                                p.line_segment([egui::pos2(nx + 2.4, ny), egui::pos2(nx + 2.4, ny - 8.0)], egui::Stroke::new(1.0, ink));
+                                p.text(egui::pos2(nx + 7.0, ny - 1.0), egui::Align2::LEFT_CENTER, format!("= {:.0}   {}/4   {} {}", b.bpm, bpb as u32, note_name(ev.key.0), if ev.key.1 { "minor" } else { "major" }), egui::FontId::proportional(11.0), ink);
+                                p.image(e.tex.id(), img, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+                            }
+                        } else {
+                            for bar in 0..b.bars {
+                                let x = x_of(rect, bar as f32 * bpb);
+                                p.line_segment([egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())], egui::Stroke::new(1.0, egui::Color32::from_gray(48)));
+                            }
                         }
-                        p.text(egui::pos2(rect.left() + 4.0, rect.center().y), egui::Align2::LEFT_CENTER, if audio { "take" } else { "roots" }, egui::FontId::proportional(10.0), egui::Color32::from_gray(150));
+                        let faint = egui::Color32::from_gray(150);
                         if audio {
+                            p.text(egui::pos2(rect.left() + 4.0, rect.center().y), egui::Align2::LEFT_CENTER, "take", egui::FontId::proportional(10.0), faint);
                             if wave.is_empty() {
                                 p.text(grid.center(), egui::Align2::CENTER_CENTER, "no take yet: ● Record take, then play once through", egui::FontId::proportional(12.0), egui::Color32::from_gray(120));
                             } else {
@@ -1380,12 +1477,62 @@ impl eframe::App for App {
                                     p.text(grid.center(), egui::Align2::CENTER_CENTER, "recorded at another tempo or length: silent", egui::FontId::proportional(12.0), egui::Color32::from_rgb(235, 190, 60));
                                 }
                             }
+                        } else if score.is_some() {
+                            // the engraved score is the picture
+                        } else if letters {
+                            // rows C..B, time across, bars and beats numbered, chords named
+                            let dim = egui::Color32::from_gray(120);
+                            let (top_strip, rh) = (26.0, 8.0);
+                            let flats = ev.key_sig < 0;
+                            let row_y = |l: usize| rect.top() + top_strip + (6 - l) as f32 * rh;
+                            for l in 0..7 {
+                                let y = row_y(l);
+                                if l % 2 == 0 {
+                                    p.rect_filled(egui::Rect::from_min_max(egui::pos2(grid.left(), y), egui::pos2(rect.right(), y + rh)), 0.0, egui::Color32::from_white_alpha(6));
+                                }
+                                p.text(egui::pos2(rect.left() + GUTTER - 12.0, y + rh / 2.0), egui::Align2::CENTER_CENTER, ['C', 'D', 'E', 'F', 'G', 'A', 'B'][l].to_string(), egui::FontId::monospace(9.0), faint);
+                            }
+                            let key_name = format!("{} {}", note_name(ev.key.0), if ev.key.1 { "minor" } else { "major" });
+                            p.text(egui::pos2(rect.left() + 4.0, rect.top() + 7.0), egui::Align2::LEFT_CENTER, format!("{}/{}  {:.0} bpm", bpb as u32, 4, b.bpm), egui::FontId::proportional(9.0), faint);
+                            p.text(egui::pos2(rect.left() + 4.0, rect.top() + 20.0), egui::Align2::LEFT_CENTER, key_name, egui::FontId::proportional(9.0), faint);
+                            for beat in 0..loop_beats as u32 {
+                                let x = x_of(rect, beat as f32);
+                                let first = beat % bpb as u32 == 0;
+                                p.line_segment([egui::pos2(x, rect.top() + if first { 0.0 } else { 14.0 }), egui::pos2(x, rect.bottom() - 2.0)], egui::Stroke::new(1.0, egui::Color32::from_gray(if first { 70 } else { 40 })));
+                                let label = if first { format!("{}", beat / bpb as u32 + 1) } else { format!("{}", beat % bpb as u32 + 1) };
+                                p.text(egui::pos2(x + 3.0, rect.top() + 7.0), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(if first { 11.0 } else { 9.0 }), if first { amber } else { dim });
+                            }
+                            let mut last_chord: Option<(u8, u8)> = None;
+                            for h in notes.iter() {
+                                if let Some(c) = h.chord {
+                                    if last_chord != Some(c) || h.t % bpb == 0.0 {
+                                        let sym = format!("{}{}", note_name(c.0), ["", "m", "7", "m7", "5"][c.1 as usize % 5]);
+                                        p.text(egui::pos2(x_of(rect, h.t) + 2.0, rect.top() + 20.0), egui::Align2::LEFT_CENTER, sym, egui::FontId::proportional(10.0), col);
+                                    }
+                                    last_chord = Some(c);
+                                }
+                                for &m in &h.notes {
+                                    let (l, acc) = notation::spell(m as usize % 12, flats);
+                                    let oct = (m / 12) as i32 - 1;
+                                    let (x0, x1) = (x_of(rect, h.t), x_of(rect, (h.t + h.dur).min(loop_beats)) - 1.0);
+                                    let blk = egui::Rect::from_min_max(egui::pos2(x0, row_y(l) + 0.5), egui::pos2(x1.max(x0 + 3.0), row_y(l) + rh - 0.5));
+                                    p.rect_filled(blk, 1.5, col.gamma_multiply((0.35 + 0.1 * (oct - 1).clamp(0, 6) as f32).min(1.0)));
+                                    if blk.width() >= 13.0 {
+                                        let name = format!("{}{}{}", ['C', 'D', 'E', 'F', 'G', 'A', 'B'][l], match acc { 1 => "#", -1 => "b", _ => "" }, oct);
+                                        p.text(blk.left_center() + egui::vec2(1.5, 0.0), egui::Align2::LEFT_CENTER, name, egui::FontId::monospace(7.0), egui::Color32::WHITE);
+                                    }
+                                }
+                            }
+                            if notes.is_empty() {
+                                p.text(grid.center(), egui::Align2::CENTER_CENTER, "no roots yet: ● Record roots and play them, or click here to place one", egui::FontId::proportional(12.0), egui::Color32::from_gray(120));
+                            }
                         } else {
+                            p.text(egui::pos2(rect.left() + 4.0, rect.center().y), egui::Align2::LEFT_CENTER, "roots", egui::FontId::proportional(10.0), faint);
                             // root blocks: each lasts until the next root; the last one carries across the loop
                             let n = roots.len();
                             for (k, &(t, pc)) in roots.iter().enumerate() {
                                 let end = if k + 1 < n { roots[k + 1].0 } else { loop_beats };
-                                let blk = egui::Rect::from_min_max(egui::pos2(x_of(rect, t), rect.top() + 3.0), egui::pos2(x_of(rect, end) - 1.0, rect.bottom() - 3.0));
+                                let blk = egui::Rect::from_min_max(egui::pos2(beat_x(t), rect.top() + 3.0), egui::pos2(beat_x(end) - 1.0, rect.bottom() - 3.0));
                                 p.rect_filled(blk, 3.0, col.gamma_multiply(0.35));
                                 p.rect_stroke(blk, 3.0, egui::Stroke::new(1.0, col), egui::StrokeKind::Inside);
                                 p.text(blk.left_top() + egui::vec2(5.0, 3.0), egui::Align2::LEFT_TOP, note_name(pc), egui::FontId::proportional(15.0), egui::Color32::WHITE);
@@ -1398,27 +1545,40 @@ impl eframe::App for App {
                                     p.text(blk.left_top() + egui::vec2(5.0, 3.0), egui::Align2::LEFT_TOP, note_name(last), egui::FontId::proportional(13.0), egui::Color32::from_gray(190));
                                 }
                             }
-                            // where the style plays
-                            if !roots.is_empty() {
-                                for bar in 0..b.bars {
-                                    for &h in hits.iter() {
-                                        let x = x_of(rect, bar as f32 * bpb + h);
-                                        p.line_segment([egui::pos2(x, rect.bottom() - 16.0), egui::pos2(x, rect.bottom() - 5.0)], egui::Stroke::new(2.0, egui::Color32::WHITE.gamma_multiply(0.75)));
+                            // what the track actually played over the loop (live: the last pass stays until it is overwritten)
+                            if wave_live.len() >= (ti + 1) * band::WAVE_BINS {
+                                let w = &wave_live[ti * band::WAVE_BINS..(ti + 1) * band::WAVE_BINS];
+                                let mid = rect.center().y;
+                                for (i, v) in w.iter().enumerate() {
+                                    let x = grid.left() + (i as f32 + 0.5) / w.len() as f32 * grid_w;
+                                    let h = v.sqrt().min(1.0) * (lane_h / 2.0 - 4.0);
+                                    if h > 0.4 {
+                                        p.line_segment([egui::pos2(x, mid - h), egui::pos2(x, mid + h)], egui::Stroke::new((grid_w / w.len() as f32).max(1.0), col.gamma_multiply(1.4)));
                                     }
                                 }
-                            } else {
+                            }
+                            if roots.is_empty() {
                                 p.text(grid.center(), egui::Align2::CENTER_CENTER, "no roots yet: ● Record roots and play them, or click here to place one", egui::FontId::proportional(12.0), egui::Color32::from_gray(120));
                             }
+                        }
+                        if let Some(e) = &score_err {
+                            p.text(grid.center(), egui::Align2::CENTER_CENTER, format!("cannot engrave: {e}"), egui::FontId::proportional(11.0), red);
+                        }
+                        if !audio && view == BandView::Score && score.is_none() && score_err.is_none() {
+                            p.text(grid.center(), egui::Align2::CENTER_CENTER, "no notes yet: record or place roots, and the score appears", egui::FontId::proportional(12.0), egui::Color32::from_gray(120));
                         }
                         if mine {
                             p.rect_stroke(rect, 3.0, egui::Stroke::new(2.0, if rec_stage == 0 { amber } else { red }), egui::StrokeKind::Inside);
                             p.text(egui::pos2(rect.right() - 8.0, rect.top() + 9.0), egui::Align2::RIGHT_CENTER, if rec_stage == 0 { count_text.as_str() } else if audio { "● recording: play your part" } else { "● play the root notes, one at a time" }, egui::FontId::proportional(12.0), if rec_stage == 0 { amber } else { red });
                         }
+                        if b.on {
+                            let x = beat_x(pos.clamp(0.0, loop_beats));
+                            p.line_segment([egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())], egui::Stroke::new(2.0, egui::Color32::from_rgb(250, 250, 250)));
+                        }
                         if !audio && resp.clicked() {
                             if let Some(pt) = resp.interact_pointer_pos() {
-                                if pt.x >= grid.left() {
-                                    let beat = ((pt.x - grid.left()) / grid_w * loop_beats).clamp(0.0, loop_beats - 0.01);
-                                    pick = Some((track, beat, pt));
+                                if score.is_some() || pt.x >= grid.left() {
+                                    pick = Some((track, x_beat(pt.x), pt));
                                 }
                             }
                         }
@@ -1426,11 +1586,6 @@ impl eframe::App for App {
                     ui.add_space(6.0);
                 }
 
-                // ---- the playhead across every lane
-                if b.on && top < bottom {
-                    let x = lane_left + GUTTER + (pos / loop_beats).clamp(0.0, 1.0) * grid_w;
-                    ui.painter().line_segment([egui::pos2(x, top), egui::pos2(x, bottom)], egui::Stroke::new(2.0, egui::Color32::from_rgb(250, 250, 250)));
-                }
                 ui.weak("Pick a drum loop (click the grid to edit it), then give the bass and the guitar a source: Style (play each chord's root once, or click the lane to place roots; the band plays the chosen style on them) or Rec (record your own playing for one pass).");
               });
             });
@@ -1472,6 +1627,7 @@ impl eframe::App for App {
                 }
             }
             self.band_pick = pick;
+            self.band_view = view;
             if !open {
                 self.band_open = false;
             }
@@ -1669,3 +1825,4 @@ fn main() -> eframe::Result {
     };
     eframe::run_native("guitar-fx", options, Box::new(|_cc| Ok(Box::new(App::new()))))
 }
+

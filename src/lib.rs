@@ -2,6 +2,7 @@
 //! The command-line tool and the UI are both thin front ends over this crate.
 
 pub mod band;
+pub mod notation;
 pub mod chain;
 pub mod effects;
 pub mod listen;

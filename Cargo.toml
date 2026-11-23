@@ -13,7 +13,7 @@ path = "src/main.rs"
 
 [features]
 default = ["ui"]
-ui = ["dep:eframe"]
+ui = ["dep:eframe", "dep:acorde-io", "dep:acorde-render-svg", "dep:resvg"]
 
 [[bin]]
 name = "guitar-fx-ui"
@@ -22,9 +22,12 @@ required-features = ["ui"]
 
 [dependencies]
 cpal = "0.18"
+acorde-io = { version = "2", features = ["abc"], optional = true }
+acorde-render-svg = { version = "2", optional = true }
 eframe = { version = "0.37.0", optional = true }
 fundsp = "0.23"
 hound = "3.5"
 ringbuf = "0.4"
+resvg = { version = "0.50", default-features = false, optional = true }
 serde_json = "1"
 signalsmith-stretch = "0.1"
