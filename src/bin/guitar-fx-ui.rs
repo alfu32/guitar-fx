@@ -5,7 +5,7 @@
 mod theme;
 
 use eframe::egui;
-use guitar_fx_core::band::{BandCmd, BandSettings, Snap, Track, BASS_STYLES, CHORD_TYPES, GUITAR_STYLES, RHYTHMS};
+use guitar_fx_core::band::{self, BandCmd, BandEvents, BandSetup, BandSettings, DrumGrid, Snap, Source, Track, CHORD_TYPES, RHYTHMS, TRACKS};
 use guitar_fx_core::chain::{Cmd, Slot};
 use guitar_fx_core::tools::{LoopCmd, LoopState};
 use guitar_fx_core::effects::build;
@@ -61,6 +61,10 @@ struct App {
     output_db: f32,
     chain_name: String,
     user_chains: Vec<String>,
+    user_bands: Vec<String>,
+    band_name: String,
+    /// The drum loop and roots last seen in the running band (kept across Stop/Start and saved).
+    band_cache: Option<(DrumGrid, [Vec<(f32, u8)>; 5])>,
     status: String,
     shown_in: f32,
     shown_out: f32,
@@ -108,6 +112,9 @@ impl App {
             output_db: 0.0,
             chain_name: "my-chain".into(),
             user_chains: Vec::new(),
+            user_bands: Vec::new(),
+            band_name: "my-band".into(),
+            band_cache: None,
             status: String::new(),
             shown_in: 0.0,
             shown_out: 0.0,
@@ -133,6 +140,7 @@ impl App {
             last_save: Instant::now(),
         };
         app.scan_chains();
+        app.scan_bands();
         if !app.restore_session() {
             for name in ["compressor", "overdrive", "reverb"] {
                 app.add_local(guitar_fx_core::params::effect_def(name).unwrap());
@@ -144,6 +152,83 @@ impl App {
 
     fn chains_dir() -> PathBuf {
         paths::chains_dir()
+    }
+
+    fn bands_dir() -> PathBuf {
+        paths::bands_dir()
+    }
+
+    fn scan_bands(&mut self) {
+        self.user_bands = std::fs::read_dir(Self::bands_dir())
+            .map(|d| {
+                let mut v: Vec<String> = d
+                    .filter_map(|e| e.ok())
+                    .filter_map(|e| e.file_name().into_string().ok())
+                    .filter_map(|n| n.strip_suffix(".band").map(str::to_string))
+                    .collect();
+                v.sort();
+                v
+            })
+            .unwrap_or_default();
+    }
+
+    /// The band as it is now: mixer, drum loop and roots.
+    fn band_setup(&self) -> BandSetup {
+        let (drums, roots) = self.band_cache.clone().unwrap_or_else(|| (band::drum_grid_of(self.band.rhythm), Default::default()));
+        BandSetup { settings: BandSettings { on: false, ..self.band }, drums, roots }
+    }
+
+    /// Make the band match a setup (a running band at once; otherwise at the next Start).
+    fn apply_band_setup(&mut self, mut st: BandSetup) {
+        st.settings.on = self.band.on;
+        self.band = st.settings;
+        self.band_cache = Some((st.drums.clone(), st.roots.clone()));
+        self.send_band_setup(&st);
+        self.sync_listening();
+    }
+
+    fn send_band_setup(&self, st: &BandSetup) {
+        for c in st.commands() {
+            self.send(Cmd::Band(c));
+        }
+    }
+
+    fn load_band(&mut self, name: &str) {
+        match std::fs::read_to_string(Self::bands_dir().join(format!("{name}.band"))).map_err(|e| e.to_string()).and_then(|t| BandSetup::from_text(&t)) {
+            Ok(st) => {
+                self.apply_band_setup(st);
+                self.band_name = name.to_string();
+                self.error = None;
+                self.status = format!("band setup {name} loaded");
+            }
+            Err(e) => self.error = Some(format!("{name}: {e}")),
+        }
+    }
+
+    fn save_band(&mut self) {
+        let dir = Self::bands_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        let name: String = self.band_name.trim().chars().map(|c| if c.is_alphanumeric() || "-_ ".contains(c) { c } else { '-' }).collect();
+        if name.is_empty() {
+            self.error = Some("give the band a name first".into());
+            return;
+        }
+        let path = dir.join(format!("{name}.band"));
+        match std::fs::write(&path, self.band_setup().to_text()) {
+            Ok(()) => {
+                self.error = None;
+                self.status = format!("saved {}", path.display());
+                self.scan_bands();
+            }
+            Err(e) => self.error = Some(format!("{}: {e}", path.display())),
+        }
+    }
+
+    fn new_band(&mut self) {
+        let d = BandSettings::default();
+        let st = BandSetup { settings: d, drums: band::drum_grid_of(d.rhythm), roots: Default::default() };
+        self.apply_band_setup(st);
+        self.band_name = "new-band".into();
     }
 
     fn scan_chains(&mut self) {
@@ -256,6 +341,12 @@ impl App {
                 running.control.meters.set_tuner(self.tuner_on, self.tuner_mute);
                 running.control.meters.set_listening(self.listen_on || self.band.on);
                 running.control.send(Cmd::Band(BandCmd::Settings(self.band)));
+                if self.band_cache.is_some() {
+                    for c in self.band_setup().commands() {
+                        running.control.send(Cmd::Band(c));
+                    }
+                    running.control.send(Cmd::Band(BandCmd::Settings(self.band)));
+                }
                 running.control.send(Cmd::Metronome { on: self.metro_on, bpm: self.bpm, beats: self.beats, volume: self.metro_vol });
                 running.control.send(Cmd::Looper(LoopCmd::Level(self.loop_vol)));
                 self.status = format!("{} → {}", running.input_name, running.output_name);
@@ -908,6 +999,15 @@ impl eframe::App for App {
             ctx.request_repaint_after(Duration::from_millis(50));
         }
 
+        if let (Some(r), true) = (&self.running, self.band_open || self.band.on) {
+            let ev: BandEvents = r.control.meters.band_events();
+            if ev.beats_per_bar != 0 {
+                self.band_cache = Some((ev.drums, ev.roots));
+            }
+        }
+        let mut load_band: Option<String> = None;
+        let mut delete_band: Option<String> = None;
+        let mut new_band = false;
         let mut load_builtin: Option<usize> = None;
         let mut load_user: Option<String> = None;
         let mut new_chain = false;
@@ -938,6 +1038,33 @@ impl eframe::App for App {
                     }
                 });
                 ui.weak("Stored in your config folder.").on_hover_text(Self::chains_dir().display().to_string());
+
+                ui.add_space(10.0);
+                ui.separator();
+                ui.heading("My bands");
+                if ui.add_sized([200.0, 24.0], egui::Button::new("＋  New band")).on_hover_text("Default mixer, the first drum loop, no roots").clicked() {
+                    new_band = true;
+                }
+                if self.user_bands.is_empty() {
+                    ui.weak("Nothing saved yet.");
+                }
+                for name in &self.user_bands {
+                    ui.horizontal(|ui| {
+                        if ui.add_sized([170.0, 22.0], egui::Button::new(name)).on_hover_text("Load this band: mixer, styles, drum loop and roots").clicked() {
+                            load_band = Some(name.clone());
+                        }
+                        if ui.small_button("✕").on_hover_text("Delete this saved band").clicked() {
+                            delete_band = Some(name.clone());
+                        }
+                    });
+                }
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.band_name).desired_width(100.0));
+                    if ui.button("Save band").clicked() {
+                        self.save_band();
+                    }
+                });
+                ui.weak("Recorded takes are not saved, only roots, styles, drums and the mixer.").on_hover_text(Self::bands_dir().display().to_string());
             });
         });
         egui::Panel::right("tools").resizable(true).default_size(270.0).size_range(200.0..=520.0).show(root, |ui| {
@@ -991,6 +1118,16 @@ impl eframe::App for App {
         if let Some(name) = load_user {
             self.load_user_chain(&name);
         }
+        if new_band {
+            self.new_band();
+        }
+        if let Some(name) = load_band {
+            self.load_band(&name);
+        }
+        if let Some(name) = delete_band {
+            let _ = std::fs::remove_file(Self::bands_dir().join(format!("{name}.band")));
+            self.scan_bands();
+        }
         if let Some(name) = delete_user {
             let _ = std::fs::remove_file(Self::chains_dir().join(format!("{name}.fx")));
             self.scan_chains();
@@ -1016,7 +1153,7 @@ impl eframe::App for App {
             let mut cmds: Vec<BandCmd> = Vec::new();
             let (pos, (rec_track, rec_stage), ev, levels) = match &self.running {
                 Some(r) => (r.control.meters.band_pos(), r.control.meters.band_rec(), r.control.meters.band_events(), r.control.meters.band_levels()),
-                None => (0.0, (0, 0), Default::default(), [0.0; 3]),
+                None => (0.0, (0, 0), Default::default(), [0.0; 6]),
             };
             let running = self.running.is_some();
             let bpb = RHYTHMS[b.rhythm.min(RHYTHMS.len() - 1)].beats.max(1) as f32;
@@ -1106,7 +1243,7 @@ impl eframe::App for App {
                             ui.toggle_value(&mut b.mute[0], "M").on_hover_text("Mute");
                             ui.toggle_value(&mut b.solo[0], "S").on_hover_text("Solo");
                         });
-                        ui.add(egui::Slider::new(&mut b.drums, 0.0..=1.0).text("vol"));
+                        ui.add(egui::Slider::new(&mut b.vol[0], 0.0..=1.0).text("vol"));
                         ui.add(egui::ProgressBar::new(levels[0].sqrt().min(1.0)).desired_height(4.0));
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new(RHYTHMS[b.rhythm.min(RHYTHMS.len() - 1)].name).weak());
@@ -1124,7 +1261,7 @@ impl eframe::App for App {
                     let steps = ev.drums.steps.max(1);
                     let total = (b.bars as usize * steps) as f32;
                     let cell_w = grid_w / total;
-                    for (row, name) in guitar_fx_core::band::DRUM_ROWS.iter().enumerate() {
+                    for (row, name) in band::DRUM_ROWS.iter().enumerate() {
                         let y = rect.top() + row as f32 * ROW_H;
                         p.text(egui::pos2(rect.left() + 4.0, y + ROW_H / 2.0), egui::Align2::LEFT_CENTER, *name, egui::FontId::proportional(10.0), egui::Color32::from_gray(150));
                         for k in 0..(b.bars as usize * steps) {
@@ -1162,14 +1299,21 @@ impl eframe::App for App {
                 ui.add_space(6.0);
 
                 // bass and guitar
-                for (track, title, col, styles, style_ix, hits, wave, wave_ok, roots) in [
-                    (Track::Bass, "Bass", blue, &BASS_STYLES[..], 0usize, &ev.bass_hits, &ev.bass_wave, ev.bass_wave_ok, &ev.bass),
-                    (Track::Guitar, "Rhythm guitar", green, &GUITAR_STYLES[..], 1, &ev.guitar_hits, &ev.guitar_wave, ev.guitar_wave_ok, &ev.guitar),
-                ] {
-                    let ti = track as usize; // 1 bass, 2 guitar: index into mute/solo/levels
-                    let (style, volume, source) = if style_ix == 0 { (&mut b.bass_style, &mut b.bass, &mut b.bass_src) } else { (&mut b.guitar_style, &mut b.guitar, &mut b.guitar_src) };
+                for track in TRACKS {
+                    let ti = track as usize; // 1..5: index into vol/style/src/mute/solo/levels
+                    let title = track.name();
+                    let styles = track.styles();
+                    let col = match track {
+                        Track::Bass => blue,
+                        Track::Guitar => green,
+                        Track::Lead => egui::Color32::from_rgb(190, 130, 235),
+                        Track::Solo => egui::Color32::from_rgb(240, 120, 160),
+                        Track::Organ => egui::Color32::from_rgb(80, 205, 205),
+                    };
+                    let (hits, (wave, wave_ok), roots) = (ev.hits_of(track), ev.wave_of(track), ev.roots_of(track));
+                    let (style, volume, source) = (&mut b.style[ti], &mut b.vol[ti], &mut b.src[ti]);
                     let mine = rec_track == track as u32;
-                    let audio = *source == guitar_fx_core::band::Source::Audio;
+                    let audio = *source == Source::Audio;
                     ui.horizontal_top(|ui| {
                         ui.allocate_ui_with_layout(egui::vec2(HEAD_W, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
                             ui.set_width(HEAD_W - 8.0);
@@ -1177,8 +1321,8 @@ impl eframe::App for App {
                                 ui.colored_label(col, egui::RichText::new(title).strong());
                                 ui.toggle_value(&mut b.mute[ti], "M").on_hover_text("Mute");
                                 ui.toggle_value(&mut b.solo[ti], "S").on_hover_text("Solo");
-                                ui.selectable_value(source, guitar_fx_core::band::Source::Style, "Style").on_hover_text("The band plays a style on the root notes you indicate");
-                                ui.selectable_value(source, guitar_fx_core::band::Source::Audio, "Rec").on_hover_text("Your own playing, recorded for one pass and looped");
+                                ui.selectable_value(source, Source::Style, "Style").on_hover_text("The band plays a style on the root notes you indicate");
+                                ui.selectable_value(source, Source::Audio, "Rec").on_hover_text("Your own playing, recorded for one pass and looped");
                             });
                             ui.add(egui::Slider::new(volume, 0.0..=1.0).text("vol"));
                             ui.add(egui::ProgressBar::new(levels[ti].sqrt().min(1.0)).desired_height(4.0));
@@ -1201,15 +1345,15 @@ impl eframe::App for App {
                                 {
                                     cmds.push(BandCmd::Record(track));
                                 }
-                                if track == Track::Guitar && !audio && ui.add_enabled(!ev.bass.is_empty(), egui::Button::new("= bass")).on_hover_text("Use the bass roots").clicked() {
-                                    cmds.push(BandCmd::CopyBassToGuitar);
+                                if track != Track::Bass && !audio && ui.add_enabled(!ev.roots_of(Track::Bass).is_empty(), egui::Button::new("= bass")).on_hover_text("Use the bass roots").clicked() {
+                                    cmds.push(BandCmd::CopyRoots(Track::Bass, track));
                                 }
                                 if ui.small_button("✕").on_hover_text("Clear this track").clicked() {
                                     cmds.push(BandCmd::Clear(track));
                                 }
                             });
                         });
-                        let lane_h = 78.0;
+                        let lane_h = 62.0;
                         let (rect, resp) = ui.allocate_exact_size(egui::vec2(lane_w, lane_h), egui::Sense::click());
                         top = top.min(rect.top());
                         bottom = bottom.max(rect.bottom());
@@ -1294,11 +1438,9 @@ impl eframe::App for App {
             // the note chooser for a clicked spot of a roots lane
             if let Some((track, beat, at)) = pick {
                 let mut done = false;
-                let existing = match track {
-                    Track::Bass => &ev.bass,
-                    Track::Guitar => &ev.guitar,
-                }
-                .iter()
+                let existing = ev
+                    .roots_of(track)
+                    .iter()
                 .any(|r| (r.0 - beat).abs() < 0.3);
                 egui::Area::new(egui::Id::unique("root_pick")).fixed_pos(at).order(egui::Order::Foreground).show(&ctx, |ui| {
                     egui::Frame::popup(ui.style()).show(ui, |ui| {

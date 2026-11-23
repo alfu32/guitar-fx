@@ -30,6 +30,11 @@ pub fn chains_dir() -> PathBuf {
     config_dir().join("chains")
 }
 
+/// Saved band setups (`.band`).
+pub fn bands_dir() -> PathBuf {
+    config_dir().join("bands")
+}
+
 /// Drop cabinet impulse responses (`.wav`) here; the Cabinet effect finds them by name.
 pub fn ir_dir() -> PathBuf {
     config_dir().join("ir")

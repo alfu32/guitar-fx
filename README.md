@@ -101,17 +101,18 @@ tempo, a light that flashes on every beat), a **looper** (Record, then Close loo
 Stop, Clear; it records what comes out of the chain, up to 60 s) and a **tuner** (note, cents
 and a needle; the output can be muted while tuning). The **Listener** window shows what you are
 playing in musical terms: the chord, the key or mode (with how sure it is), the tempo with a beat light, and
-the 12 pitch classes. The **Band** window is a small multitrack mixer on one timeline: a drum track, a bass track and a rhythm guitar track, locked to one loop
+the 12 pitch classes. The **Band** window is a small multitrack mixer on one timeline: a drum track and five played tracks (bass, rhythm guitar, lead guitar, solo guitar, organ), locked to one loop
 (tempo and 1-8 bars) with a playhead running across all of them. Each track has a volume, mute, solo and a level meter. The
 **drum track** is a loop you pick from a catalog of 20 (rock, rock shuffle, four on the floor, half-time, funk, disco,
 hip-hop, Motown, reggae, ballad, bossa nova, samba, country, punk, metal, blues shuffle, jazz swing, slow
 12/8 blues, waltz, waltz ballad) and can edit: click a step to add a hit, click again for an accent, right-click for ghost notes.
 The **bass** and **guitar** tracks each have a source. *Style*: you indicate the root notes, by playing them once over the
 loop (the band names each note and where it fell) or by clicking the lane to place them; the band then plays the style you chose
-(14 bass styles from whole notes to walking, funk, reggae, boogie; 13 guitar styles: strums, skanks, chops, arpeggios,
-boom-chick...) on those roots, changing root exactly where you indicated. *Rec*: one pass of your own playing is recorded
+(14 bass styles from whole notes to walking, funk, reggae, boogie; 13 rhythm guitar styles: strums, skanks, chops, arpeggios,
+boom-chick...; 12 lead guitar riffs and 10 solo phrases built from the chord's notes, the solo a singing monophonic voice with vibrato; 10 organ styles: held chords, swells, stabs, reggae bubble...) on those roots, changing root exactly where you indicated. *Rec*: one pass of your own playing is recorded
 (as it comes out of the effect chain) and looped, shown as a waveform; a take is silent if you change the tempo or length afterwards.
 Pressing a record button erases that track's take, returns to the start of the loop, plays a click for the count-in (0-4 bars, default 2) and then records one pass. The mixer sits in a panel at the bottom of the window; the splitters between it, the side panels and the effect chain can be dragged.
+The left panel's **My bands** list saves and loads a whole band setup (mixer, styles, drum loop and roots; not recorded takes) in `~/.config/guitar-fx/bands/`, like the saved chains.
 Chord types come from the roots (a major or minor key that contains them) or can be set by hand. While recording roots play single notes
 (one at a time, a low string works best; it names notes from about 60 Hz up). No samples are used. The Listener
 listens to the dry guitar on a separate thread, so it adds no delay; it needs a few
