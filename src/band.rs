@@ -320,6 +320,8 @@ pub enum BandCmd {
     /// Set one step of the drum loop: row, step, level 0..4.
     SetDrumStep(u8, u8, u8),
     ClearDrums,
+    /// Empty every track (roots and takes) and go back to the rhythm's own drum loop.
+    ClearAll,
     /// Back to the start of the loop.
     Restart,
 }
@@ -1159,6 +1161,26 @@ impl Band {
         }
     }
 
+    /// Stops what a track is sounding right now.
+    fn silence(&mut self, t: Track) {
+        match t {
+            Track::Bass => self.bass_t = 9.0,
+            Track::Guitar => {
+                self.scratch_t = 9.0;
+                self.pools[0].v.iter_mut().for_each(|v| v.active = false);
+            }
+            Track::Lead => self.pools[1].v.iter_mut().for_each(|v| v.active = false),
+            Track::Solo => {
+                self.solo_voice.gate = false;
+                self.solo_voice.env = 0.0;
+            }
+            Track::Organ => {
+                self.organ.gate = false;
+                self.organ.env = [0.0; 4];
+            }
+        }
+    }
+
     fn update_len(&mut self) {
         let n = (self.loop_beats as f64 * 60.0 / self.s.bpm as f64 * self.sr as f64).round() as usize;
         self.loop_len = n.min(self.rec_data.len());
@@ -1196,7 +1218,22 @@ impl Band {
                 }
             }
             BandCmd::CancelRecord => self.cancel_rec(),
+            BandCmd::ClearAll => {
+                self.cancel_rec();
+                for p in &mut self.parts {
+                    p.events.clear();
+                    p.clip.len = 0;
+                }
+                self.grid = grid_of(&RHYTHMS[self.s.rhythm]);
+                self.wave_live.fill(0.0);
+                TRACKS.iter().for_each(|&t| self.silence(t));
+                self.rebuild();
+                self.update_key();
+                self.dirty = true;
+            }
             BandCmd::Clear(t) => {
+                self.silence(t);
+                self.wave_live[t as usize * WAVE_BINS..(t as usize + 1) * WAVE_BINS].fill(0.0);
                 if self.src(t) == Source::Audio {
                     self.parts[t.ix()].clip.len = 0;
                 } else {
@@ -2300,6 +2337,34 @@ mod tests {
         let w = m.band_wave();
         let bass_w = &w[WAVE_BINS..2 * WAVE_BINS];
         assert!(bass_w[..WAVE_BINS / 8].iter().any(|&v| v > 0.05));
+    }
+
+    #[test]
+    fn clear_empties_a_track_and_its_picture_and_clear_all_empties_everything() {
+        let mut b = Band::new(SR);
+        let m = Meters::default();
+        let mut st = with(with(settings(), 1, 1.0), 5, 1.0);
+        st.style[1] = 0;
+        st.style[5] = 0;
+        b.configure(st);
+        b.parts[0].events = vec![(0.0, 9)];
+        b.parts[4].events = vec![(0.0, 4)];
+        b.update_key();
+        render(&mut b, &m, 1.0);
+        let live = |m: &Meters, slot: usize| m.band_wave()[slot * WAVE_BINS..(slot + 1) * WAVE_BINS].iter().any(|&v| v > 0.01);
+        assert!(live(&m, 1) && live(&m, 5));
+        b.command(BandCmd::Clear(Track::Bass), &m);
+        render(&mut b, &m, 0.05);
+        assert!(!live(&m, 1), "the bass picture goes with its roots");
+        assert!(live(&m, 5), "the organ is untouched");
+        assert!(m.band_events().notes[0].is_empty() && !m.band_events().notes[4].is_empty());
+        b.command(BandCmd::SetDrumStep(0, 3, 4), &m);
+        b.command(BandCmd::ClearAll, &m);
+        render(&mut b, &m, 0.05);
+        let ev = m.band_events();
+        assert!(ev.roots.iter().all(|r| r.is_empty()) && ev.notes.iter().all(|n| n.is_empty()));
+        assert_eq!(ev.drums, drum_grid_of(0), "the drums are the rhythm's again");
+        assert!(!live(&m, 5));
     }
 
     #[test]

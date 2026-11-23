@@ -246,10 +246,10 @@ impl App {
         }
     }
 
+    /// Empty every track and the drum edits, keeping the mixer as it is (tempo, rhythm, styles, volumes).
     fn new_band(&mut self) {
-        let d = BandSettings::default();
-        let st = BandSetup { settings: d, drums: band::drum_grid_of(d.rhythm), roots: Default::default() };
-        self.apply_band_setup(st);
+        self.send(Cmd::Band(BandCmd::ClearAll));
+        self.band_cache = Some((band::drum_grid_of(self.band.rhythm), Default::default()));
         self.band_name = "new-band".into();
     }
 
@@ -1064,7 +1064,7 @@ impl eframe::App for App {
                 ui.add_space(10.0);
                 ui.separator();
                 ui.heading("My bands");
-                if ui.add_sized([200.0, 24.0], egui::Button::new("＋  New band")).on_hover_text("Default mixer, the first drum loop, no roots").clicked() {
+                if ui.add_sized([200.0, 24.0], egui::Button::new("＋  New band")).on_hover_text("Empty every track and the drum edits; the mixer stays as it is").clicked() {
                     new_band = true;
                 }
                 if self.user_bands.is_empty() {
